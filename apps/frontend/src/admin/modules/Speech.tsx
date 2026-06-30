@@ -95,9 +95,17 @@ const LIGHTTTS_TTS_DEFAULTS = {
     stream: true,
     timeout_s: 90,
     prompt_wav_path: "apps/backend/storage/lighttts_voices/debate_voice_1.wav",
-    prompt_text: "You are a helpful assistant.<|endofprompt|>大家好，我将用正式、清晰、平直的语气完成本轮辩论发言。",
-    tts_speaking_cps: 6.2,
-    agent_speech_time_factor: 0.76,
+    prompt_text: "You are a helpful assistant.<|endofprompt|>唯有提问思维能审视价值，请问谁定一把心？",
+    prompt_voice_library: "apps/backend/storage/lighttts_voices",
+    fallback_provider: "alicloud",
+    tts_speaking_cps: 5.6,
+    agent_speech_time_factor: 1,
+    agent_max_token_margin: 1.5,
+    first_segment_chars: 28,
+    min_segment_chars: 72,
+    max_segment_chars: 150,
+    sentence_concurrency: 2,
+    sentence_timeout_s: 90,
   },
 };
 
@@ -398,7 +406,7 @@ function SectionEditor({
         </div>
 
         <div className="space-y-1.5">
-          <Label>WebSocket 接口地址</Label>
+          <Label>{localProvider ? "本机接口地址" : "WebSocket 接口地址"}</Label>
           <Input value={draft.endpoint} onChange={(event) => set("endpoint", event.target.value)} placeholder="wss://…" />
         </div>
 

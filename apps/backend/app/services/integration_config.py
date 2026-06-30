@@ -264,6 +264,8 @@ LIGHTTTS_VOICE_PRESETS = [
         "agent_max_token_margin": 1.5,
     },
 ]
+LIGHTTTS_VOICE_PRESET_BY_ID = {item["id"]: item for item in LIGHTTTS_VOICE_PRESETS}
+LIGHTTTS_VOICE_PRESET_BY_VOICE = {item["voice"]: item for item in LIGHTTTS_VOICE_PRESETS}
 
 DEFAULT_VOICE_PRESETS = [
     {
@@ -661,11 +663,22 @@ class IntegrationConfigStore:
                 item["description"] = "本地 Qwen3-TTS 稳定白名单音色，使用统一正式辩论参数。"
 
     def _enforce_lighttts_voice_whitelist(self, presets: List[Dict[str, Any]]) -> None:
+        allowed = set(LIGHTTTS_VOICE_PRESET_BY_VOICE)
+        presets[:] = [
+            item for item in presets
+            if item.get("provider") != "lighttts" or str(item.get("voice") or "").strip() in allowed
+        ]
         for item in presets:
             if item.get("provider") != "lighttts":
                 continue
+            builtin = LIGHTTTS_VOICE_PRESET_BY_ID.get(str(item.get("id") or "")) or LIGHTTTS_VOICE_PRESET_BY_VOICE.get(
+                str(item.get("voice") or "").strip()
+            )
             formal = self._formal_tts_settings("lighttts")
-            item["model"] = item.get("model") or LIGHTTTS_TTS_DEFAULTS["settings"]["model"]
+            item["model"] = LIGHTTTS_COSYVOICE3_MODEL
+            item["tts_model_name"] = (builtin or {}).get("tts_model_name") or LIGHTTTS_TTS_DEFAULTS["settings"]["tts_model_name"]
+            item["prompt_wav_path"] = (builtin or {}).get("prompt_wav_path") or item.get("prompt_wav_path") or LIGHTTTS_TTS_DEFAULTS["settings"]["prompt_wav_path"]
+            item["prompt_text"] = (builtin or {}).get("prompt_text") or item.get("prompt_text") or LIGHTTTS_TTS_DEFAULTS["settings"]["prompt_text"]
             item["response_format"] = "pcm"
             item["sample_rate"] = 24000
             item["mode"] = "http_stream"

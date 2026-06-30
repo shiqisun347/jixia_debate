@@ -547,14 +547,22 @@ class LightTTSTTSGateway:
             "stream": options.get("stream") if options.get("stream") is not None else settings.get("stream", True),
             "timeout_s": options.get("timeout_s") or settings.get("timeout_s") or 90,
         }
-        for key in ("speed", "speech_rate", "volume", "pitch_rate"):
+        speed_value = options.get("speed")
+        if speed_value is None or speed_value == "":
+            speed_value = settings.get("speed")
+        if speed_value is not None and speed_value != "":
+            session["speed"] = speed_value
+        # LightTTS/CosyVoice3 streaming only supports speed=1.0. speech_rate,
+        # volume and pitch_rate remain UI/timing metadata for this provider and
+        # must not be sent as synthesis controls.
+        for key in ("speech_rate", "volume", "pitch_rate"):
             value = options.get(key)
             if value is None or value == "":
                 value = preset.get(key)
             if value is None or value == "":
                 value = settings.get(key)
             if value is not None and value != "":
-                session["speed" if key == "speech_rate" else key] = value
+                session[key] = value
         return session
 
 

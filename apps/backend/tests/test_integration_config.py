@@ -120,6 +120,9 @@ def test_lighttts_presets_migrate_measured_voice_timing(monkeypatch, tmp_path) -
 
     assert presets["voice_lighttts_debate_1"]["tts_speaking_cps"] == 5.8
     assert presets["voice_lighttts_debate_3"]["tts_speaking_cps"] == 3.9
+    assert presets["voice_lighttts_debate_3"]["model"] == "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+    assert presets["voice_lighttts_debate_3"]["prompt_wav_path"].endswith("debate_voice_3.wav")
+    assert "您的质疑只是情绪宣泄" in presets["voice_lighttts_debate_3"]["prompt_text"]
     assert presets["voice_lighttts_debate_1"]["agent_speech_time_factor"] == 1.0
     assert presets["voice_lighttts_debate_3"]["agent_max_token_margin"] == 1.5
     assert presets["voice_lighttts_debate_1"]["first_segment_chars"] == 28
@@ -131,6 +134,50 @@ def test_lighttts_presets_migrate_measured_voice_timing(monkeypatch, tmp_path) -
     assert settings["first_segment_chars"] == 28
     assert settings["min_segment_chars"] == 72
     assert settings["max_segment_chars"] == 150
+
+
+def test_lighttts_presets_force_cosyvoice3_and_drop_unknown_prompt_voices(monkeypatch, tmp_path) -> None:
+    config_file = tmp_path / "integration.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "tts": {"provider": "lighttts", "enabled": True, "endpoint": "http://127.0.0.1:8080"},
+                "voice_presets": [
+                    {
+                        "id": "voice_lighttts_debate_2",
+                        "name": "旧音色 2",
+                        "provider": "lighttts",
+                        "model": "wrong-model",
+                        "voice": "debate_voice_2",
+                        "prompt_wav_path": "",
+                        "prompt_text": "",
+                        "enabled": True,
+                        "is_default": True,
+                    },
+                    {
+                        "id": "voice_lighttts_custom_bad",
+                        "name": "错误音色",
+                        "provider": "lighttts",
+                        "voice": "random_voice",
+                        "enabled": True,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ic, "_under_pytest", lambda: False)
+
+    store = ic.IntegrationConfigStore(path=config_file)
+    public = store.public()
+    presets = {item["id"]: item for item in public["voice_presets"] if item["provider"] == "lighttts"}
+
+    assert "voice_lighttts_custom_bad" not in presets
+    assert presets["voice_lighttts_debate_2"]["model"] == "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+    assert presets["voice_lighttts_debate_2"]["tts_model_name"] == "default"
+    assert presets["voice_lighttts_debate_2"]["prompt_wav_path"].endswith("debate_voice_2.wav")
+    assert "准星若指向错误靶心" in presets["voice_lighttts_debate_2"]["prompt_text"]
 
 
 def test_cosyvoice_runtime_config_migrates_from_alicloud_to_lighttts(monkeypatch, tmp_path) -> None:

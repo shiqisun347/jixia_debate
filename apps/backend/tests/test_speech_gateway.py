@@ -454,3 +454,42 @@ def test_lighttts_stream_sends_prompt_and_returns_pcm(monkeypatch, tmp_path) -> 
     assert "正式辩论测试" in seen["body"]
     assert "You are a helpful assistant" in seen["body"]
     assert "stream" in seen["body"]
+
+
+def test_lighttts_speech_rate_is_not_sent_as_streaming_speed(monkeypatch, tmp_path) -> None:
+    prompt_wav = tmp_path / "prompt.wav"
+    prompt_wav.write_bytes(b"RIFF....WAVEfmt ")
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = await request.aread()
+        seen["body"] = body.decode("utf-8", "ignore")
+        return httpx.Response(200, content=b"\x01\x00")
+
+    real_async_client = httpx.AsyncClient
+
+    def fake_async_client(*_args, **kwargs):
+        return real_async_client(transport=httpx.MockTransport(handler), timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("app.services.speech_gateway.httpx.AsyncClient", fake_async_client)
+    gateway = LightTTSTTSGateway(
+        section={
+            "endpoint": "http://127.0.0.1:8080",
+            "settings": {
+                "sample_rate": 24000,
+                "stream": True,
+                "speech_rate": 1.4,
+                "prompt_wav_path": str(prompt_wav),
+                "prompt_text": "You are a helpful assistant.<|endofprompt|>大家好。",
+                "tts_model_name": "default",
+            },
+        },
+        preset={"voice": "debate_voice_1", "speech_rate": 1.4},
+    )
+
+    result = asyncio.run(gateway.synthesize("正式辩论测试。"))
+
+    assert result.audio == b"\x01\x00"
+    assert 'name="stream"' in seen["body"]
+    assert "true" in seen["body"]
+    assert 'name="speed"' not in seen["body"]
