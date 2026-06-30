@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=/home/ubuntu/sunsq/debateall
+APP_USER=${APP_USER:-ubuntu}
 BACKEND_SERVICE=jixia-debate-6016.service
 VOICE_AGENT_SERVICE=jixia-voice-agent-6008.service
 ASR_SERVICE=funasr-nano-asr
@@ -16,6 +17,17 @@ run_sudo() {
     "$@"
   else
     sudo "$@"
+  fi
+}
+
+user_systemctl() {
+  if (( EUID == 0 )); then
+    local app_uid
+    app_uid=$(id -u "$APP_USER")
+    runuser -l "$APP_USER" -c "XDG_RUNTIME_DIR=/run/user/${app_uid} systemctl --user $*"
+  else
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    systemctl --user "$@"
   fi
 }
 
@@ -103,10 +115,9 @@ main() {
   run_sudo supervisorctl restart "$TTS_SERVICE" >/dev/null || run_sudo supervisorctl start "$TTS_SERVICE" >/dev/null
 
   log "restarting jixia backend and voice agent"
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user restart "$BACKEND_SERVICE"
-  systemctl --user restart "$VOICE_AGENT_SERVICE"
+  user_systemctl daemon-reload >/dev/null 2>&1 || true
+  user_systemctl restart "$BACKEND_SERVICE"
+  user_systemctl restart "$VOICE_AGENT_SERVICE"
 
   wait_tcp 127.0.0.1 10095 "FunASR ASR" 240
   wait_tcp 127.0.0.1 8080 "LightTTS/CosyVoice3" 300
