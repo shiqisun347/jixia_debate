@@ -48,6 +48,48 @@ It uses standard FunASR `paraformer-zh` behind the same local websocket protocol
 as the Fun-ASR-Nano service. Use the Nano/vLLM service only on hosts whose driver
 can run the matching torch/vLLM stack for prompt embeddings.
 
+## Branch Deploy For Development
+
+For the shared development server, keep real secrets outside the Git working
+tree and deploy branches from GitHub with:
+
+```bash
+cd /home/ubuntu/sunsq/debateall
+bash scripts/deploy_branch.sh
+```
+
+The default branch is `dev`. To deploy another branch:
+
+```bash
+bash scripts/deploy_branch.sh feat/screen-polish
+```
+
+By default, server-local config is recopied from:
+
+```text
+/home/ubuntu/sunsq/debateall-config/
+  .env
+  runtime/storage/tokens.json
+```
+
+Every file or directory inside that config directory is copied into
+`/home/ubuntu/sunsq/debateall/` after the branch checkout. This lets the server
+reset to the selected GitHub branch while keeping real `.env`, token files, and
+runtime config off GitHub. To use a different config directory:
+
+```bash
+bash scripts/deploy_branch.sh dev /srv/jixia-config
+```
+
+Useful overrides:
+
+```bash
+JIXIA_GIT_REMOTE=origin \
+JIXIA_SUPERVISOR_PROGRAMS="jixia-debate" \
+JIXIA_HEALTH_URL=http://127.0.0.1:12234/api/health \
+bash scripts/deploy_branch.sh dev /srv/jixia-config
+```
+
 ## Health Checks
 
 ```bash
