@@ -57,6 +57,7 @@ QUEUE_TIMEOUT_SECONDS = float(os.getenv("QWEN_TTS_QUEUE_TIMEOUT_SECONDS", "600")
 MAX_QUEUE_WAITERS = int(os.getenv("QWEN_TTS_MAX_QUEUE_WAITERS", "64"))
 INTERNAL_QUEUE_CHUNKS = int(os.getenv("QWEN_TTS_INTERNAL_QUEUE_CHUNKS", "64"))
 WARMUP = os.getenv("QWEN_TTS_WARMUP", "1").strip().lower() not in {"0", "false", "no", "off"}
+PARITY_MODE = os.getenv("QWEN_TTS_PARITY_MODE", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTH_TOKEN = os.getenv("QWEN_TTS_AUTH_TOKEN", "").strip()
 
 VOICE_ALIASES = {
@@ -415,6 +416,23 @@ def _generate_audio_chunks(opts: GenerationOptions) -> Iterable[tuple[bytes, dic
         raise RuntimeError("model_not_loaded")
     speaker = _resolve_voice(opts.voice)
     for segment_index, segment in enumerate(_split_text(opts.text)):
+        if PARITY_MODE:
+            audio_list, sr = tts_model.model.generate_custom_voice(
+                text=segment,
+                speaker=speaker,
+                language=opts.language,
+                instruct=opts.instructions,
+                non_streaming_mode=True,
+                max_new_tokens=opts.max_new_tokens,
+                temperature=opts.temperature,
+                top_k=opts.top_k,
+                top_p=opts.top_p,
+                do_sample=True,
+                repetition_penalty=opts.repetition_penalty,
+            )
+            for audio_chunk in audio_list:
+                yield _to_pcm16(audio_chunk), {"segment_index": segment_index, "speaker": speaker, "mode": "qwen_tts_parity"}
+            continue
         generator = tts_model.generate_custom_voice_streaming(
             text=segment,
             speaker=speaker,
