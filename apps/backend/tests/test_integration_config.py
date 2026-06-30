@@ -131,3 +131,80 @@ def test_lighttts_presets_migrate_measured_voice_timing(monkeypatch, tmp_path) -
     assert settings["first_segment_chars"] == 28
     assert settings["min_segment_chars"] == 72
     assert settings["max_segment_chars"] == 150
+
+
+def test_cosyvoice_runtime_config_migrates_from_alicloud_to_lighttts(monkeypatch, tmp_path) -> None:
+    config_file = tmp_path / "integration.json"
+    prompt_wav = tmp_path / "debate_voice_1.wav"
+    prompt_wav.write_bytes(b"RIFF....WAVEfmt ")
+    config_file.write_text(
+        json.dumps(
+            {
+                "tts": {
+                    "provider": "alicloud",
+                    "enabled": True,
+                    "endpoint": "http://127.0.0.1:8080",
+                    "voice": "debate_voice_1",
+                    "settings": {
+                        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                        "response_format": "pcm",
+                        "sample_rate": 24000,
+                        "speech_rate": 1,
+                        "mode": "server_commit",
+                        "prompt_wav_path": str(prompt_wav),
+                        "prompt_text": "You are a helpful assistant.<|endofprompt|>大家好。",
+                        "fallback_provider": "local_qwen",
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ic, "_under_pytest", lambda: False)
+
+    store = ic.IntegrationConfigStore(path=config_file)
+    public = store.public()
+    settings = public["tts"]["settings"]
+
+    assert public["tts"]["provider"] == "lighttts"
+    assert public["tts"]["endpoint"] == "http://127.0.0.1:8080"
+    assert public["tts"]["voice"] == "debate_voice_1"
+    assert settings["model"] == "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+    assert settings["tts_model_name"] == "default"
+    assert settings["stream_mode"] == "http_stream"
+    assert settings["response_format"] == "pcm"
+    assert settings["speech_rate"] == 1.0
+    assert settings["stream"] is True
+    assert settings["fallback_provider"] == "alicloud"
+
+    on_disk = json.loads(config_file.read_text(encoding="utf-8"))
+    assert on_disk["tts"]["provider"] == "lighttts"
+
+
+def test_alicloud_api_tts_provider_remains_available(monkeypatch, tmp_path) -> None:
+    config_file = tmp_path / "integration.json"
+    config_file.write_text(
+        json.dumps(
+            {
+                "tts": {
+                    "provider": "alicloud",
+                    "enabled": True,
+                    "endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime",
+                    "voice": "Neil",
+                    "settings": {"model": "qwen3-tts-flash-realtime"},
+                    "secrets": {"alicloud": {"api_key": "sk-test"}},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ic, "_under_pytest", lambda: False)
+
+    store = ic.IntegrationConfigStore(path=config_file)
+    public = store.public()
+
+    assert public["tts"]["provider"] == "alicloud"
+    assert public["tts"]["settings"]["model"] == "qwen3-tts-flash-realtime"
+    assert public["tts"]["voice"] == "Neil"

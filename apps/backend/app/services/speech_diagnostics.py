@@ -135,6 +135,28 @@ def _component(component: str) -> Dict[str, Any]:
             "model": settings.get("model"),
             "detail": "本机 Qwen 语音服务配置完整" if endpoint else "缺少本机 Qwen 服务地址",
         }
+    if provider == "lighttts":
+        endpoint = str(section.get("endpoint") or "").strip()
+        settings = section.get("settings") or {}
+        prompt_wav_path = str(settings.get("prompt_wav_path") or "").strip()
+        missing = []
+        if not endpoint:
+            missing.append(f"{component}.endpoint")
+        if not prompt_wav_path:
+            missing.append("tts.settings.prompt_wav_path")
+        elif not Path(prompt_wav_path).exists():
+            missing.append("tts.settings.prompt_wav_path file")
+        return {
+            "component": component,
+            "provider": "lighttts",
+            "status": "ready" if not missing else "missing_config",
+            "configured": ["endpoint", "prompt_wav_path"] if not missing else [],
+            "missing": missing,
+            "url": _redact_url(endpoint),
+            "auth_ready": bool(endpoint),
+            "model": settings.get("model"),
+            "detail": "本机 LightTTS/CosyVoice3 配置完整" if not missing else f"缺少 {', '.join(missing)}",
+        }
     return {
         "component": component,
         "provider": provider,

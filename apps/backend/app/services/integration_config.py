@@ -32,6 +32,7 @@ FORMAL_DEBATE_TTS_REPETITION_PENALTY = 1.1
 FORMAL_DEBATE_TTS_CHUNK_SIZE = 8
 FORMAL_DEBATE_TTS_MAX_NEW_TOKENS = 2048
 FORMAL_DEBATE_SCREEN_PLAYBACK_RATE = 1.0
+LIGHTTTS_COSYVOICE3_MODEL = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
 
 LOCAL_QWEN_STABLE_VOICES = {"aiden", "ryan", "dylan", "sohee"}
 LOCAL_QWEN_VOICE_ALIASES = {
@@ -144,23 +145,25 @@ LIGHTTTS_TTS_DEFAULTS = {
     "endpoint": "http://127.0.0.1:8080",
     "voice": "debate_voice_1",
     "settings": {
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model": LIGHTTTS_COSYVOICE3_MODEL,
         "tts_model_name": "default",
         "stream_mode": "http_stream",
         "response_format": "pcm",
         "sample_rate": 24000,
+        "language_type": "Chinese",
         "speech_rate": 1.0,
         "volume": FORMAL_DEBATE_TTS_VOLUME,
         "pitch_rate": FORMAL_DEBATE_TTS_PITCH_RATE,
         "screen_playback_rate": FORMAL_DEBATE_SCREEN_PLAYBACK_RATE,
         "stream": True,
         "timeout_s": 90,
+        "instructions": FORMAL_DEBATE_TTS_INSTRUCTIONS,
         "prompt_wav_path": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices" / "debate_voice_1.wav"),
         # prompt_text 必须与 prompt_wav 真实朗读内容一致（否则 zero-shot 音色保真度下降），
         # 与 storage/lighttts_voices/debate_voice_1.txt 保持同步。
         "prompt_text": "You are a helpful assistant.<|endofprompt|>唯有提问思维能审视价值，请问谁定一把心？",
         "prompt_voice_library": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices"),
-        "fallback_provider": "local_qwen",
+        "fallback_provider": "alicloud",
         "tts_speaking_cps": 5.8,
         "agent_speech_time_factor": 1.0,
         "agent_max_token_margin": 1.5,
@@ -172,7 +175,7 @@ LIGHTTTS_VOICE_PRESETS = [
         "id": "voice_lighttts_debate_1",
         "name": "辩论正式音色 1",
         "provider": "lighttts",
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model": LIGHTTTS_COSYVOICE3_MODEL,
         "voice": "debate_voice_1",
         "tts_model_name": "default",
         "prompt_wav_path": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices" / "debate_voice_1.wav"),
@@ -195,7 +198,7 @@ LIGHTTTS_VOICE_PRESETS = [
         "id": "voice_lighttts_debate_2",
         "name": "辩论正式音色 2",
         "provider": "lighttts",
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model": LIGHTTTS_COSYVOICE3_MODEL,
         "voice": "debate_voice_2",
         "tts_model_name": "default",
         "prompt_wav_path": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices" / "debate_voice_2.wav"),
@@ -218,7 +221,7 @@ LIGHTTTS_VOICE_PRESETS = [
         "id": "voice_lighttts_debate_3",
         "name": "辩论正式音色 3",
         "provider": "lighttts",
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model": LIGHTTTS_COSYVOICE3_MODEL,
         "voice": "debate_voice_3",
         "tts_model_name": "default",
         "prompt_wav_path": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices" / "debate_voice_3.wav"),
@@ -241,7 +244,7 @@ LIGHTTTS_VOICE_PRESETS = [
         "id": "voice_lighttts_debate_4",
         "name": "辩论正式音色 4",
         "provider": "lighttts",
-        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model": LIGHTTTS_COSYVOICE3_MODEL,
         "voice": "debate_voice_4",
         "tts_model_name": "default",
         "prompt_wav_path": str(project_root() / "apps" / "backend" / "storage" / "lighttts_voices" / "debate_voice_4.wav"),
@@ -508,7 +511,9 @@ class IntegrationConfigStore:
         if funasr_url:
             config["asr"].update({**deepcopy(FUNASR_ASR_DEFAULTS), "endpoint": funasr_url})
         if local_tts_url:
-            config["tts"].update({**deepcopy(LOCAL_QWEN_TTS_DEFAULTS), "endpoint": local_tts_url})
+            tts_provider = os.getenv("PHDEBATE_TTS_PROVIDER", "").strip().lower()
+            defaults = deepcopy(LIGHTTTS_TTS_DEFAULTS if tts_provider == "lighttts" or self._looks_like_lighttts_url(local_tts_url) else LOCAL_QWEN_TTS_DEFAULTS)
+            config["tts"].update({**defaults, "endpoint": local_tts_url})
         if asr_url:
             config["asr"].update(
                 {
@@ -588,6 +593,8 @@ class IntegrationConfigStore:
     def _normalize(self) -> None:
         for kind, base_defaults in (("asr", ALICLOUD_ASR_DEFAULTS), ("tts", ALICLOUD_TTS_DEFAULTS)):
             section = self.config.setdefault(kind, {})
+            if kind == "tts":
+                self._migrate_cosyvoice_tts_section(section)
             provider = self._normalize_provider(section.get("provider"))
             defaults = self._provider_defaults(kind, provider) or base_defaults
             for key, value in defaults.items():
@@ -606,6 +613,8 @@ class IntegrationConfigStore:
                         section["settings"][key] = deepcopy(value)
                     else:
                         section["settings"].setdefault(key, deepcopy(value))
+            if kind == "tts" and provider == "lighttts":
+                self._enforce_lighttts_tts_section(section)
             section["secrets"] = self._merge_secrets(section.get("secrets") or {}, {})
         presets = [self._normalize_voice_preset(item) for item in self.config.get("voice_presets", []) if isinstance(item, dict)]
         seen = {item["id"] for item in presets}
@@ -683,6 +692,47 @@ class IntegrationConfigStore:
             for key, value in LIGHTTTS_VOICE_TIMING.get(str(item.get("id") or ""), {}).items():
                 item[key] = value
             item["description"] = item.get("description") or "LightTTS/CosyVoice 固定 prompt 音色。"
+
+    @staticmethod
+    def _looks_like_lighttts_url(value: str) -> bool:
+        url = value.strip().lower()
+        return bool(url) and (":8080" in url or "lighttts" in url)
+
+    def _migrate_cosyvoice_tts_section(self, section: Dict[str, Any]) -> None:
+        settings = section.setdefault("settings", {})
+        model = str(settings.get("model") or "").strip()
+        endpoint = str(section.get("endpoint") or "").strip()
+        provider = str(section.get("provider") or "").strip().lower()
+        if provider == "lighttts":
+            return
+        if model == LIGHTTTS_COSYVOICE3_MODEL or self._looks_like_lighttts_url(endpoint):
+            section["provider"] = "lighttts"
+            section["enabled"] = True
+            section["endpoint"] = endpoint or LIGHTTTS_TTS_DEFAULTS["endpoint"]
+            section["voice"] = section.get("voice") or LIGHTTTS_TTS_DEFAULTS["voice"]
+
+    def _enforce_lighttts_tts_section(self, section: Dict[str, Any]) -> None:
+        defaults = deepcopy(LIGHTTTS_TTS_DEFAULTS)
+        settings = section.setdefault("settings", {})
+        section["endpoint"] = str(section.get("endpoint") or defaults["endpoint"]).strip()
+        section["voice"] = str(section.get("voice") or defaults["voice"]).strip()
+        for key in (
+            "model",
+            "tts_model_name",
+            "stream_mode",
+            "response_format",
+            "sample_rate",
+            "speech_rate",
+            "stream",
+            "language_type",
+            "timeout_s",
+            "prompt_voice_library",
+            "fallback_provider",
+        ):
+            settings[key] = deepcopy(defaults["settings"][key])
+        for key in ("prompt_wav_path", "prompt_text"):
+            value = str(settings.get(key) or "").strip()
+            settings[key] = value or deepcopy(defaults["settings"][key])
 
     @staticmethod
     def _canonical_local_qwen_voice(value: Any) -> str:
