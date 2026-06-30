@@ -71,6 +71,39 @@ wait_http() {
   return 1
 }
 
+wait_voice_agent_ready() {
+  local url=$1
+  local timeout=${2:-180}
+  local deadline=$((SECONDS + timeout))
+  local body
+  local err
+  body=$(mktemp -t jixia-voice-health.XXXXXX)
+  err=$(mktemp -t jixia-voice-health.err.XXXXXX)
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 5 "$url" >"$body" 2>"$err" && python3 - "$body" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+services = data.get("local_services") or {}
+asr_ok = bool((services.get("asr") or {}).get("ok"))
+tts_ok = bool((services.get("tts") or {}).get("ok"))
+raise SystemExit(0 if data.get("ok") and asr_ok and tts_ok else 1)
+PY
+    then
+      log "jixia voice agent local ASR/TTS health ok: $(cat "$body")"
+      rm -f "$body" "$err"
+      return 0
+    fi
+    sleep 3
+  done
+  log "ERROR: jixia voice agent local ASR/TTS health check failed: ${url}"
+  cat "$body" 2>/dev/null || cat "$err" 2>/dev/null || true
+  rm -f "$body" "$err"
+  return 1
+}
+
 require_paths() {
   test -d "$ROOT"
   run_sudo test -x /root/autodl-tmp/funasr-nano-venv/bin/python
@@ -128,7 +161,7 @@ main() {
   wait_tcp 127.0.0.1 10095 "FunASR ASR" 240
   wait_tcp 127.0.0.1 8080 "LightTTS/CosyVoice3" 300
   wait_http http://127.0.0.1:6016/api/health "jixia backend" 120
-  wait_http http://127.0.0.1:6008/health "jixia voice agent" 120
+  wait_voice_agent_ready http://127.0.0.1:6008/health 180
 
   log "ASR websocket smoke test"
   smoke_asr
