@@ -43,6 +43,11 @@ Do not commit:
 7. Install ASR/TTS services under `services/`; download models on the target server with `HF_ENDPOINT=https://hf-mirror.com`.
 8. Restart supervisor and verify `http://127.0.0.1:12234/api/health`.
 
+The target supervisor template starts `serve_realtime_ws_compat.py` for ASR.
+It uses standard FunASR `paraformer-zh` behind the same local websocket protocol
+as the Fun-ASR-Nano service. Use the Nano/vLLM service only on hosts whose driver
+can run the matching torch/vLLM stack for prompt embeddings.
+
 ## Health Checks
 
 ```bash
