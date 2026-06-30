@@ -193,7 +193,7 @@ def _asr_base_url() -> str:
 
 
 def _tts_base_url() -> str:
-    return os.getenv("PHDEBATE_LOCAL_TTS_BASE_URL", "http://127.0.0.1:12302")
+    return os.getenv("PHDEBATE_LOCAL_TTS_BASE_URL", "http://127.0.0.1:8080")
 
 
 def _env_bool(name: str, default: bool) -> bool:

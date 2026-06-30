@@ -1043,7 +1043,7 @@ async def start_voice_agent_for_speech(
                 "speaker_id": speaker_id,
                 "livekit": token,
                 "asr_base_url": os.getenv("PHDEBATE_LOCAL_ASR_BASE_URL", "http://127.0.0.1:12301"),
-                "tts_base_url": os.getenv("PHDEBATE_LOCAL_TTS_BASE_URL", "http://127.0.0.1:12302"),
+                "tts_base_url": os.getenv("PHDEBATE_LOCAL_TTS_BASE_URL", "http://127.0.0.1:8080"),
             }
         )
     except VoiceAgentClientError as exc:
