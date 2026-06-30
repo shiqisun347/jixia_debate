@@ -53,15 +53,21 @@ wait_http() {
   local name=$2
   local timeout=${3:-180}
   local deadline=$((SECONDS + timeout))
+  local body
+  local err
+  body=$(mktemp -t jixia-start-health.XXXXXX)
+  err=$(mktemp -t jixia-start-health.err.XXXXXX)
   while (( SECONDS < deadline )); do
-    if curl -fsS --max-time 5 "$url" >/tmp/phdebate-start-health.json 2>/tmp/phdebate-start-health.err; then
-      log "${name} health ok: $(cat /tmp/phdebate-start-health.json)"
+    if curl -fsS --max-time 5 "$url" >"$body" 2>"$err"; then
+      log "${name} health ok: $(cat "$body")"
+      rm -f "$body" "$err"
       return 0
     fi
     sleep 3
   done
   log "ERROR: ${name} health check failed: ${url}"
-  cat /tmp/phdebate-start-health.err 2>/dev/null || true
+  cat "$err" 2>/dev/null || true
+  rm -f "$body" "$err"
   return 1
 }
 
