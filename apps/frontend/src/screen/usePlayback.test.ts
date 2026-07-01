@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SCREEN_TTS_PLAYBACK_RATE,
   applyScreenTtsPlaybackRate,
+  buildPlaybackMetricsSummary,
   clearActiveAudio,
   clearWsAudioUrls,
   computeResumeIdx,
@@ -147,6 +148,100 @@ describe("usePlayback TTS audio websocket buffer", () => {
         2
       )
     ).toEqual({ ok: false, reason: "already_resolved" });
+  });
+});
+
+describe("usePlayback metrics summary", () => {
+  it("summarizes audio totals, ratios, sources, and segment text", () => {
+    const summary = buildPlaybackMetricsSummary(
+      {
+        key: "speech:task",
+        match_id: "match",
+        speech_id: "speech",
+        task_id: "task",
+        speaker_id: "speaker",
+        started_at_ms: 1000,
+        last_tick_ms: 5000,
+        playing_ms: 2400,
+        waiting_audio_ms: 600,
+        stalled_ms: 300,
+        idle_ms: 500,
+        blocked_ms: 200,
+        segments_played: 2,
+        segments_skipped: 1,
+        segments_media_error: 1,
+        segments_ws_audio: 1,
+        segments_url_fallback: 1,
+        tts_audio_ws_reconnects: 2,
+        tts_audio_ws_ignored_stale: 3,
+        tts_audio_ws_decode_errors: 4,
+        ws_arrival_lag_ms: [30, 50],
+        play_attempt_to_onplaying_ms: [100],
+        inter_segment_gap_ms: [80],
+        last_segment_ended_at_ms: 4700,
+        flushed: false,
+        segments: new Map([
+          [
+            0,
+            {
+              sentence_idx: 0,
+              text: "第一段",
+              normalized_text: "第一段",
+              text_length: 3,
+              normalized_text_length: 3,
+              source: "ws_audio",
+              size_bytes: 1000,
+              duration_s: 1.2,
+              play_ms: 1200,
+              wait_before_play_ms: 100,
+              first_seen_at_ms: 1200,
+              audio_available_at_ms: 1300,
+              play_attempt_at_ms: 1400,
+              playing_at_ms: 1500,
+              ended_at_ms: 2700,
+            },
+          ],
+          [
+            1,
+            {
+              sentence_idx: 1,
+              text: "第二段",
+              normalized_text: "第二段。",
+              text_length: 3,
+              normalized_text_length: 4,
+              source: "url_fallback",
+              size_bytes: null,
+              duration_s: 0.8,
+              play_ms: 800,
+              wait_before_play_ms: 200,
+              first_seen_at_ms: 2800,
+              audio_available_at_ms: 2900,
+              play_attempt_at_ms: 3100,
+              playing_at_ms: 3200,
+              ended_at_ms: 4000,
+            },
+          ],
+        ]),
+      },
+      "playback_done",
+      5000
+    );
+
+    expect(summary.reason).toBe("playback_done");
+    expect(summary.observed_ms).toBe(4000);
+    expect(summary.play_ratio).toBe(0.6);
+    expect(summary.waiting_audio_ratio).toBe(0.15);
+    expect(summary.audio_segments_total).toBe(2);
+    expect(summary.audio_total_bytes).toBe(1000);
+    expect(summary.audio_total_duration_s).toBe(2);
+    expect(summary.audio_ws_bytes).toBe(1000);
+    expect(summary.audio_ws_segments).toBe(1);
+    expect(summary.audio_url_fallback_segments).toBe(1);
+    expect(summary.audio_unknown_size_segments).toBe(1);
+    expect(summary.audio_sentence_indices).toEqual([0, 1]);
+    expect(summary.avg_sentence_audio_ws_arrival_lag_ms).toBe(40);
+    expect(summary.segments[0]).toMatchObject({ sentence_idx: 0, text: "第一段", source: "ws_audio", size_bytes: 1000 });
+    expect(summary.segments[1]).toMatchObject({ sentence_idx: 1, normalized_text: "第二段。", source: "url_fallback", size_bytes: null });
   });
 });
 

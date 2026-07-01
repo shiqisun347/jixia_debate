@@ -8576,6 +8576,8 @@ class MatchStore:
                 "audio_url": audio_url,
                 "mime_type": archive_mime_type,
                 "size_bytes": len(result.audio),
+                "text": text,
+                "normalized_text": normalized_text,
             },
             "screen",
             speaker_id,
@@ -8590,6 +8592,8 @@ class MatchStore:
             mime_type=archive_mime_type,
             audio=archived_audio,
             audio_url=audio_url,
+            text=text,
+            normalized_text=normalized_text,
         )
         _chain_log(
             logging.INFO,

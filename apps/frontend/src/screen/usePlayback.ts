@@ -39,10 +39,100 @@ type TtsSentenceAudioMessage = {
   speaker_id?: unknown;
   sentence_idx?: unknown;
   audio_seq?: unknown;
+  created_at_ms?: unknown;
   mime_type?: unknown;
   size_bytes?: unknown;
   audio_base64?: unknown;
   audio_url?: unknown;
+  text?: unknown;
+  normalized_text?: unknown;
+};
+
+type PlaybackMetricsBucket = "playing_ms" | "waiting_audio_ms" | "stalled_ms" | "idle_ms" | "blocked_ms";
+type SegmentAudioSource = "ws_audio" | "url_fallback";
+type SegmentMetrics = {
+  sentence_idx: number;
+  text: string;
+  normalized_text: string;
+  text_length: number;
+  normalized_text_length: number;
+  source: SegmentAudioSource | "";
+  size_bytes: number | null;
+  duration_s: number | null;
+  play_ms: number;
+  wait_before_play_ms: number;
+  first_seen_at_ms: number | null;
+  audio_available_at_ms: number | null;
+  play_attempt_at_ms: number | null;
+  playing_at_ms: number | null;
+  ended_at_ms: number | null;
+};
+type PlaybackMetrics = {
+  key: string;
+  match_id: string;
+  speech_id: string;
+  task_id: string;
+  speaker_id: string;
+  started_at_ms: number;
+  last_tick_ms: number;
+  playing_ms: number;
+  waiting_audio_ms: number;
+  stalled_ms: number;
+  idle_ms: number;
+  blocked_ms: number;
+  segments_played: number;
+  segments_skipped: number;
+  segments_media_error: number;
+  segments_ws_audio: number;
+  segments_url_fallback: number;
+  tts_audio_ws_reconnects: number;
+  tts_audio_ws_ignored_stale: number;
+  tts_audio_ws_decode_errors: number;
+  ws_arrival_lag_ms: number[];
+  play_attempt_to_onplaying_ms: number[];
+  inter_segment_gap_ms: number[];
+  last_segment_ended_at_ms: number | null;
+  flushed: boolean;
+  segments: Map<number, SegmentMetrics>;
+};
+type PlaybackMetricsSummary = {
+  reason: string;
+  match_id: string;
+  speech_id: string;
+  task_id: string;
+  speaker_id: string;
+  started_at_ms: number;
+  ended_at_ms: number;
+  observed_ms: number;
+  playing_ms: number;
+  waiting_audio_ms: number;
+  stalled_ms: number;
+  idle_ms: number;
+  blocked_ms: number;
+  play_ratio: number;
+  waiting_audio_ratio: number;
+  stalled_ratio: number;
+  blocked_ratio: number;
+  audio_segments_total: number;
+  audio_total_bytes: number;
+  audio_total_duration_s: number;
+  audio_ws_bytes: number;
+  audio_ws_segments: number;
+  audio_url_fallback_segments: number;
+  audio_unknown_size_segments: number;
+  audio_sentence_indices: number[];
+  segments_played: number;
+  segments_skipped: number;
+  segments_media_error: number;
+  segments_ws_audio: number;
+  segments_url_fallback: number;
+  tts_audio_ws_reconnects: number;
+  tts_audio_ws_ignored_stale: number;
+  tts_audio_ws_decode_errors: number;
+  avg_sentence_audio_ws_arrival_lag_ms: number | null;
+  avg_play_attempt_to_onplaying_ms: number | null;
+  avg_inter_segment_gap_ms: number | null;
+  segments: Array<Omit<SegmentMetrics, "first_seen_at_ms" | "audio_available_at_ms" | "play_attempt_at_ms" | "playing_at_ms" | "ended_at_ms">>;
 };
 
 function logPlayback(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
@@ -86,6 +176,214 @@ function mediaErrorDetails(el: HTMLAudioElement): Record<string, unknown> {
   };
 }
 
+function metricsKey(speechId: string, taskId: string): string {
+  return `${speechId}:${taskId}`;
+}
+
+function createPlaybackMetrics(matchId: string, speechId: string, taskId: string, speakerId: string, now: number): PlaybackMetrics {
+  return {
+    key: metricsKey(speechId, taskId),
+    match_id: matchId,
+    speech_id: speechId,
+    task_id: taskId,
+    speaker_id: speakerId,
+    started_at_ms: now,
+    last_tick_ms: now,
+    playing_ms: 0,
+    waiting_audio_ms: 0,
+    stalled_ms: 0,
+    idle_ms: 0,
+    blocked_ms: 0,
+    segments_played: 0,
+    segments_skipped: 0,
+    segments_media_error: 0,
+    segments_ws_audio: 0,
+    segments_url_fallback: 0,
+    tts_audio_ws_reconnects: 0,
+    tts_audio_ws_ignored_stale: 0,
+    tts_audio_ws_decode_errors: 0,
+    ws_arrival_lag_ms: [],
+    play_attempt_to_onplaying_ms: [],
+    inter_segment_gap_ms: [],
+    last_segment_ended_at_ms: null,
+    flushed: false,
+    segments: new Map(),
+  };
+}
+
+function ensureSegmentMetrics(metrics: PlaybackMetrics, sentenceIdx: number): SegmentMetrics {
+  let segment = metrics.segments.get(sentenceIdx);
+  if (!segment) {
+    segment = {
+      sentence_idx: sentenceIdx,
+      text: "",
+      normalized_text: "",
+      text_length: 0,
+      normalized_text_length: 0,
+      source: "",
+      size_bytes: null,
+      duration_s: null,
+      play_ms: 0,
+      wait_before_play_ms: 0,
+      first_seen_at_ms: null,
+      audio_available_at_ms: null,
+      play_attempt_at_ms: null,
+      playing_at_ms: null,
+      ended_at_ms: null,
+    };
+    metrics.segments.set(sentenceIdx, segment);
+  }
+  return segment;
+}
+
+function updateSegmentText(segment: SegmentMetrics, text: unknown, normalizedText: unknown): void {
+  const raw = typeof text === "string" ? text : "";
+  const normalized = typeof normalizedText === "string" ? normalizedText : raw;
+  if (raw) segment.text = raw;
+  if (normalized) segment.normalized_text = normalized;
+  segment.text_length = segment.text.length;
+  segment.normalized_text_length = segment.normalized_text.length;
+}
+
+function ensurePlaybackMetrics(
+  metricsRef: MutableRefObject<PlaybackMetrics | null>,
+  matchId: string,
+  speechId: string,
+  taskId: string,
+  speakerId: string,
+  now = nowEpoch()
+): PlaybackMetrics {
+  const key = metricsKey(speechId, taskId);
+  if (!metricsRef.current || metricsRef.current.key !== key) {
+    metricsRef.current = createPlaybackMetrics(matchId, speechId, taskId, speakerId, now);
+  } else if (speakerId && !metricsRef.current.speaker_id) {
+    metricsRef.current.speaker_id = speakerId;
+  }
+  return metricsRef.current;
+}
+
+function markMetricsAudioAvailable(
+  metrics: PlaybackMetrics,
+  sentenceIdx: number,
+  source: SegmentAudioSource,
+  sizeBytes: unknown,
+  text: unknown,
+  normalizedText: unknown,
+  now: number,
+  wsCreatedAtMs?: unknown
+): void {
+  const segment = ensureSegmentMetrics(metrics, sentenceIdx);
+  if (segment.first_seen_at_ms == null) segment.first_seen_at_ms = now;
+  if (segment.audio_available_at_ms == null) segment.audio_available_at_ms = now;
+  updateSegmentText(segment, text, normalizedText);
+  const parsedSize = Number(sizeBytes);
+  if (Number.isFinite(parsedSize) && parsedSize >= 0) segment.size_bytes = parsedSize;
+  if (!segment.source) {
+    segment.source = source;
+    if (source === "ws_audio") metrics.segments_ws_audio += 1;
+    if (source === "url_fallback") metrics.segments_url_fallback += 1;
+  } else if (segment.source === "url_fallback" && source === "ws_audio") {
+    segment.source = "ws_audio";
+    metrics.segments_url_fallback = Math.max(0, metrics.segments_url_fallback - 1);
+    metrics.segments_ws_audio += 1;
+  }
+  const createdAt = Number(wsCreatedAtMs);
+  if (source === "ws_audio" && Number.isFinite(createdAt) && createdAt > 0) {
+    metrics.ws_arrival_lag_ms.push(Math.max(0, now - createdAt));
+  }
+}
+
+function tickPlaybackMetrics(metrics: PlaybackMetrics, bucket: PlaybackMetricsBucket, now: number): void {
+  const delta = Math.max(0, now - metrics.last_tick_ms);
+  metrics[bucket] += delta;
+  metrics.last_tick_ms = now;
+}
+
+function bucketForPlaybackState(
+  speech: PlaybackSpeech | null,
+  position: PlaybackPosition,
+  media: ActiveMediaState,
+  audioEnabled: boolean,
+  suppressed: boolean
+): PlaybackMetricsBucket {
+  if (!audioEnabled || suppressed) return "blocked_ms";
+  if (!speech) return "idle_ms";
+  if (media === "playing") return "playing_ms";
+  if (media === "stalled" || media === "errored") return "stalled_ms";
+  if (position.waitingSinceMs != null) return "waiting_audio_ms";
+  return "idle_ms";
+}
+
+function average(values: number[]): number | null {
+  if (!values.length) return null;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function roundRatio(part: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.round((part / total) * 10000) / 10000;
+}
+
+export function buildPlaybackMetricsSummary(metrics: PlaybackMetrics, reason: string, endedAtMs = nowEpoch()): PlaybackMetricsSummary {
+  const observed = Math.max(0, endedAtMs - metrics.started_at_ms);
+  const segments = [...metrics.segments.values()].sort((a, b) => a.sentence_idx - b.sentence_idx);
+  const audioSegments = segments.filter((segment) => segment.source);
+  const wsSegments = audioSegments.filter((segment) => segment.source === "ws_audio");
+  const fallbackSegments = audioSegments.filter((segment) => segment.source === "url_fallback");
+  const knownBytes = audioSegments.reduce((sum, segment) => sum + (segment.size_bytes ?? 0), 0);
+  const knownDuration = segments.reduce((sum, segment) => sum + (segment.duration_s ?? 0), 0);
+  return {
+    reason,
+    match_id: metrics.match_id,
+    speech_id: metrics.speech_id,
+    task_id: metrics.task_id,
+    speaker_id: metrics.speaker_id,
+    started_at_ms: metrics.started_at_ms,
+    ended_at_ms: endedAtMs,
+    observed_ms: observed,
+    playing_ms: Math.round(metrics.playing_ms),
+    waiting_audio_ms: Math.round(metrics.waiting_audio_ms),
+    stalled_ms: Math.round(metrics.stalled_ms),
+    idle_ms: Math.round(metrics.idle_ms),
+    blocked_ms: Math.round(metrics.blocked_ms),
+    play_ratio: roundRatio(metrics.playing_ms, observed),
+    waiting_audio_ratio: roundRatio(metrics.waiting_audio_ms, observed),
+    stalled_ratio: roundRatio(metrics.stalled_ms, observed),
+    blocked_ratio: roundRatio(metrics.blocked_ms, observed),
+    audio_segments_total: audioSegments.length,
+    audio_total_bytes: knownBytes,
+    audio_total_duration_s: Math.round(knownDuration * 1000) / 1000,
+    audio_ws_bytes: wsSegments.reduce((sum, segment) => sum + (segment.size_bytes ?? 0), 0),
+    audio_ws_segments: wsSegments.length,
+    audio_url_fallback_segments: fallbackSegments.length,
+    audio_unknown_size_segments: audioSegments.filter((segment) => segment.size_bytes == null).length,
+    audio_sentence_indices: audioSegments.map((segment) => segment.sentence_idx),
+    segments_played: metrics.segments_played,
+    segments_skipped: metrics.segments_skipped,
+    segments_media_error: metrics.segments_media_error,
+    segments_ws_audio: metrics.segments_ws_audio,
+    segments_url_fallback: metrics.segments_url_fallback,
+    tts_audio_ws_reconnects: metrics.tts_audio_ws_reconnects,
+    tts_audio_ws_ignored_stale: metrics.tts_audio_ws_ignored_stale,
+    tts_audio_ws_decode_errors: metrics.tts_audio_ws_decode_errors,
+    avg_sentence_audio_ws_arrival_lag_ms: average(metrics.ws_arrival_lag_ms),
+    avg_play_attempt_to_onplaying_ms: average(metrics.play_attempt_to_onplaying_ms),
+    avg_inter_segment_gap_ms: average(metrics.inter_segment_gap_ms),
+    segments: segments.map((segment) => ({
+      sentence_idx: segment.sentence_idx,
+      text: segment.text,
+      normalized_text: segment.normalized_text,
+      text_length: segment.text_length,
+      normalized_text_length: segment.normalized_text_length,
+      source: segment.source,
+      size_bytes: segment.size_bytes,
+      duration_s: segment.duration_s,
+      play_ms: Math.round(segment.play_ms),
+      wait_before_play_ms: Math.round(segment.wait_before_play_ms),
+    })),
+  };
+}
+
 export function usePlayback(
   matchId: string,
   snapshot: MatchSnapshot | null,
@@ -119,6 +417,7 @@ export function usePlayback(
   const wsAudioUrlsRef = useRef<WsAudioUrlState>({ key: "", urls: new Map(), ownedUrls: new Set() });
   const eventSkipsRef = useRef<{ key: string; set: Set<number> }>({ key: "", set: new Set() });
   const lastSpeechKeyRef = useRef("");
+  const metricsRef = useRef<PlaybackMetrics | null>(null);
   const audioEnabledRef = useRef(audioEnabled);
   const onPlaybackBlockedRef = useRef(onPlaybackBlocked);
   const snapshotRef = useRef<MatchSnapshot | null>(snapshot);
@@ -127,6 +426,18 @@ export function usePlayback(
   audioEnabledRef.current = audioEnabled;
   onPlaybackBlockedRef.current = onPlaybackBlocked;
   snapshotRef.current = snapshot;
+
+  const flushMetrics = useCallback((reason: string, now = nowEpoch()) => {
+    const metrics = metricsRef.current;
+    if (!metrics || metrics.flushed || metrics.segments.size === 0) return;
+    const speech = projectSpeech(snapshotRef.current);
+    const suppressed = speech
+      ? suppressRef.current.has(`speech:${speech.speechId}`) || suppressRef.current.has(`task:${speech.taskId}`)
+      : false;
+    tickPlaybackMetrics(metrics, bucketForPlaybackState(speech, positionRef.current, mediaRef.current, audioEnabledRef.current, suppressed), now);
+    metrics.flushed = true;
+    console.info("[agent-tts-playback-metrics]", buildPlaybackMetricsSummary(metrics, reason, now));
+  }, []);
 
   const markPlaybackBlocked = useCallback(() => {
     positionRef.current = {
@@ -149,6 +460,12 @@ export function usePlayback(
       const cur = currentPlayRef.current;
       if (!cur) return;
       mediaRef.current = "playing";
+      const metrics = ensurePlaybackMetrics(metricsRef, matchId, cur.speechId, cur.taskId, cur.speakerId);
+      const segment = ensureSegmentMetrics(metrics, cur.idx);
+      segment.playing_at_ms = nowEpoch();
+      if (segment.play_attempt_at_ms != null) {
+        metrics.play_attempt_to_onplaying_ms.push(Math.max(0, segment.playing_at_ms - segment.play_attempt_at_ms));
+      }
       logPlayback("info", "audio_onplaying", {
         match_id: matchId,
         speech_id: cur.speechId,
@@ -182,6 +499,16 @@ export function usePlayback(
       const cur = currentPlayRef.current;
       mediaRef.current = "ended";
       if (cur) {
+        const endedAt = nowEpoch();
+        const metrics = ensurePlaybackMetrics(metricsRef, matchId, cur.speechId, cur.taskId, cur.speakerId, endedAt);
+        const segment = ensureSegmentMetrics(metrics, cur.idx);
+        segment.ended_at_ms = endedAt;
+        if (segment.playing_at_ms != null) {
+          segment.play_ms += Math.max(0, endedAt - segment.playing_at_ms);
+        }
+        segment.duration_s = Number.isFinite(el.duration) ? el.duration : segment.duration_s;
+        metrics.last_segment_ended_at_ms = endedAt;
+        metrics.segments_played += 1;
         logPlayback("info", "audio_onended", {
           match_id: matchId,
           speech_id: cur.speechId,
@@ -329,9 +656,18 @@ export function usePlayback(
       const speech = projectSpeech(snapshotRef.current);
       const speechKey = speech ? `${speech.speechId}:${speech.taskId}` : "";
       if (lastSpeechKeyRef.current && lastSpeechKeyRef.current !== speechKey) {
+        flushMetrics("speech_or_task_changed", now);
         clearWsAudioUrls(wsAudioUrlsRef.current);
+        metricsRef.current = null;
       }
       lastSpeechKeyRef.current = speechKey;
+      const suppressed = speech
+        ? suppressRef.current.has(`speech:${speech.speechId}`) || suppressRef.current.has(`task:${speech.taskId}`)
+        : false;
+      if (speech) {
+        const metrics = ensurePlaybackMetrics(metricsRef, matchId, speech.speechId, speech.taskId, speech.speakerId, now);
+        tickPlaybackMetrics(metrics, bucketForPlaybackState(speech, positionRef.current, mediaRef.current, audioEnabledRef.current, suppressed), now);
+      }
       if (speech) {
         if (progressed) {
           maybeReportPlaybackHeartbeat(now, speech, positionRef, activeSegmentRef, playbackHeartbeatRef, mediaRef, matchId);
@@ -358,10 +694,6 @@ export function usePlayback(
           speech.skippedSentences = [...skipped];
         }
       }
-      const suppressed = speech
-        ? suppressRef.current.has(`speech:${speech.speechId}`) || suppressRef.current.has(`task:${speech.taskId}`)
-        : false;
-
       for (let guard = 0; guard < 256; guard += 1) {
         const decision = reconcile({
           speech,
@@ -422,6 +754,7 @@ export function usePlayback(
             speaker_id: speech?.speakerId,
             reason: "screen_playback_complete",
           });
+          flushMetrics("playback_done", now);
           return;
         }
 
@@ -430,6 +763,11 @@ export function usePlayback(
         }
 
         if (decision.kind === "SKIP") {
+          if (speech) {
+            const metrics = ensurePlaybackMetrics(metricsRef, matchId, speech.speechId, speech.taskId, speech.speakerId, now);
+            metrics.segments_skipped += 1;
+            if (decision.reason === "media_error") metrics.segments_media_error += 1;
+          }
           logPlayback("warn", "reconcile_skip_decision", {
             match_id: matchId,
             speech_id: speech?.speechId,
@@ -462,6 +800,16 @@ export function usePlayback(
       // 播放当前段：复用唯一 <audio>，直接 src=url; play()。任一时刻只占 1 个音频连接。
       function playSegment(sp: PlaybackSpeech, idx: number, url: string) {
         const segment = `${sp.speechId}:${sp.taskId}:${idx}`;
+        const playAttemptAt = nowEpoch();
+        const metrics = ensurePlaybackMetrics(metricsRef, matchId, sp.speechId, sp.taskId, sp.speakerId, playAttemptAt);
+        const segmentMetrics = ensureSegmentMetrics(metrics, idx);
+        segmentMetrics.play_attempt_at_ms = playAttemptAt;
+        if (segmentMetrics.audio_available_at_ms != null) {
+          segmentMetrics.wait_before_play_ms += Math.max(0, playAttemptAt - segmentMetrics.audio_available_at_ms);
+        }
+        if (metrics.last_segment_ended_at_ms != null) {
+          metrics.inter_segment_gap_ms.push(Math.max(0, playAttemptAt - metrics.last_segment_ended_at_ms));
+        }
         currentPlayRef.current = { speechId: sp.speechId, taskId: sp.taskId, speakerId: sp.speakerId, idx };
         const currentEl = activeElRef.current;
         if (currentEl && activeSegmentRef.current === segment && urlRef.current === url && !currentEl.ended) {
@@ -594,6 +942,7 @@ export function usePlayback(
   // 卸载时释放音频元素。
   useEffect(() => {
     return () => {
+      flushMetrics("unload");
       clearActiveAudio(activeElRef, activeSegmentRef, playbackProgressRef);
       const p = preloaderRef.current;
       if (p) {
@@ -607,7 +956,7 @@ export function usePlayback(
         preloadedUrlRef.current = "";
       }
     };
-  }, []);
+  }, [flushMetrics]);
 
   // 触发器 1：快照变化（唯一真相）。
   useEffect(() => {
@@ -638,6 +987,11 @@ export function usePlayback(
           logPlayback("info", "tts_audio_ws_open", { match_id: matchId });
         };
         socket.onclose = () => {
+          const current = projectSpeech(snapshotRef.current);
+          if (current) {
+            const metrics = ensurePlaybackMetrics(metricsRef, matchId, current.speechId, current.taskId, current.speakerId);
+            metrics.tts_audio_ws_reconnects += 1;
+          }
           logPlayback("warn", "tts_audio_ws_closed", { match_id: matchId });
           scheduleReconnect();
         };
@@ -651,8 +1005,20 @@ export function usePlayback(
             if (message.type !== "tts.sentence_audio") return;
             const currentSpeech = projectSpeech(snapshotRef.current);
             const expectedKey = currentSpeech ? `${currentSpeech.speechId}:${currentSpeech.taskId}` : "";
+            const now = nowEpoch();
             const result = rememberWsSentenceAudio(message, wsAudioUrlsRef, eventChunksRef, expectedKey, positionRef.current.nextIdx);
             if (result.ok) {
+              const metrics = ensurePlaybackMetrics(metricsRef, matchId, result.speechId, result.taskId, String(message.speaker_id ?? currentSpeech?.speakerId ?? ""), now);
+              markMetricsAudioAvailable(
+                metrics,
+                result.sentenceIdx,
+                "ws_audio",
+                message.size_bytes,
+                message.text,
+                message.normalized_text,
+                now,
+                message.created_at_ms
+              );
               logPlayback("info", "tts_audio_ws_received", {
                 match_id: matchId,
                 speech_id: result.speechId,
@@ -667,9 +1033,18 @@ export function usePlayback(
               }
               runnerRef.current(nowEpoch());
             } else {
+              if (currentSpeech) {
+                const metrics = ensurePlaybackMetrics(metricsRef, matchId, currentSpeech.speechId, currentSpeech.taskId, currentSpeech.speakerId);
+                if (result.reason === "stale_speech_or_task") metrics.tts_audio_ws_ignored_stale += 1;
+              }
               logPlayback("warn", "tts_audio_ws_ignored", { match_id: matchId, reason: result.reason });
             }
           } catch (err) {
+            const current = projectSpeech(snapshotRef.current);
+            if (current) {
+              const metrics = ensurePlaybackMetrics(metricsRef, matchId, current.speechId, current.taskId, current.speakerId);
+              metrics.tts_audio_ws_decode_errors += 1;
+            }
             logPlayback("warn", "tts_audio_ws_message_failed", {
               match_id: matchId,
               error_message: err instanceof Error ? err.message : String(err),
@@ -721,6 +1096,11 @@ export function usePlayback(
       const idx = Number(p.sentence_idx ?? NaN);
       if (Number.isFinite(idx) && speechId && taskId) {
         const key = `${speechId}:${taskId}`;
+        const metrics = ensurePlaybackMetrics(metricsRef, matchId, speechId, taskId, String(p.speaker_id ?? ""), nowEpoch());
+        if (p.text || p.normalized_text) {
+          const segment = ensureSegmentMetrics(metrics, idx);
+          updateSegmentText(segment, p.text, p.normalized_text);
+        }
         if (url) {
           if (wsAudioUrlsRef.current.key === key && wsAudioUrlsRef.current.urls.has(idx)) {
             logPlayback("info", "sentence_ready_ignored_ws_audio_available", {
@@ -733,6 +1113,7 @@ export function usePlayback(
           } else {
             if (eventChunksRef.current.key !== key) eventChunksRef.current = { key, map: new Map() };
             eventChunksRef.current.map.set(idx, url);
+            markMetricsAudioAvailable(metrics, idx, "url_fallback", p.size_bytes, p.text, p.normalized_text, nowEpoch());
           }
           logPlayback("info", "sentence_ready_received", {
             match_id: matchId,

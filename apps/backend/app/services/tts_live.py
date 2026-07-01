@@ -165,6 +165,8 @@ class TTSAudioPushManager:
         mime_type: str,
         audio: bytes,
         audio_url: str,
+        text: str = "",
+        normalized_text: str = "",
     ) -> None:
         if not audio:
             return
@@ -181,6 +183,8 @@ class TTSAudioPushManager:
             "size_bytes": len(audio),
             "audio_base64": base64.b64encode(audio).decode("ascii"),
             "audio_url": audio_url,
+            "text": text,
+            "normalized_text": normalized_text,
         }
         stale: List[asyncio.Queue] = []
         async with self._lock:

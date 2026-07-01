@@ -19,6 +19,8 @@ def test_tts_audio_push_manager_publishes_ordered_audio_message() -> None:
             mime_type="audio/wav",
             audio=b"wav-data",
             audio_url="/api/audio/chunk.wav",
+            text="原始文本",
+            normalized_text="规范文本",
         )
 
         message = await asyncio.wait_for(first, timeout=1)
@@ -33,6 +35,8 @@ def test_tts_audio_push_manager_publishes_ordered_audio_message() -> None:
         assert message["size_bytes"] == len(b"wav-data")
         assert message["audio_base64"] == "d2F2LWRhdGE="
         assert message["audio_url"] == "/api/audio/chunk.wav"
+        assert message["text"] == "原始文本"
+        assert message["normalized_text"] == "规范文本"
         await stream.aclose()
 
     asyncio.run(run())
