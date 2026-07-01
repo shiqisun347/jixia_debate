@@ -7,6 +7,7 @@
 
 import asyncio
 import io
+import logging
 import wave
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -22,6 +23,21 @@ from app.services.xfyun_gateway import TTSResult, XfyunGatewayError
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
+
+
+def _reset_chain_logger() -> None:
+    logger = match_store_module.logger
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    for attr in (
+        "_phdebate_file_logging_configured",
+        "_phdebate_file_logging_path",
+        "_phdebate_startup_marker_logged",
+    ):
+        if hasattr(logger, attr):
+            delattr(logger, attr)
+    logger.setLevel(logging.NOTSET)
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +107,32 @@ def test_stable_tts_segments_do_not_create_tiny_first_chunk(monkeypatch) -> None
     assert len(segments) >= 6
     assert all(len(segment) <= 30 for segment in segments)
     assert any(segment.endswith("，") for segment in segments)
+
+
+def test_agent_tts_chain_debug_file_logging_requires_debug_level(monkeypatch, tmp_path) -> None:
+    _reset_chain_logger()
+    log_file = tmp_path / "agent-tts-chain.log"
+    monkeypatch.setenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_FILE", str(log_file))
+    monkeypatch.delenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_LEVEL", raising=False)
+
+    match_store_module._chain_log(logging.INFO, "debug_only_event", task_id="task_debug")
+
+    assert not log_file.exists()
+    _reset_chain_logger()
+
+
+def test_agent_tts_chain_debug_file_logging_records_debug_when_enabled(monkeypatch, tmp_path) -> None:
+    _reset_chain_logger()
+    log_file = tmp_path / "agent-tts-chain.log"
+    monkeypatch.setenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_FILE", str(log_file))
+    monkeypatch.setenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_LEVEL", "DEBUG")
+
+    match_store_module._chain_log(logging.INFO, "debug_only_event", task_id="task_debug")
+
+    text = log_file.read_text(encoding="utf-8")
+    assert "DEBUG" in text
+    assert "debug_only_event" in text
+    _reset_chain_logger()
 
 
 def test_stable_tts_segments_keep_lighttts_chunks_within_30_chars(monkeypatch) -> None:

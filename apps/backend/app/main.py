@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -587,15 +588,16 @@ async def serve_tts_audio(match_id: str, path: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="audio file not found")
     suffix = target.suffix.lower()
     media_type = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg", "pcm": "audio/pcm"}.get(suffix.lstrip("."), "audio/mpeg")
-    logger.info(
-        "agent_tts_chain audio_serve_ok match_id=%s path=%s target=%s media_type=%s size_bytes=%s elapsed_ms=%s",
-        match_id,
-        path,
-        target,
-        media_type,
-        target.stat().st_size,
-        max(0, int((time.perf_counter() - started_time) * 1000)),
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "agent_tts_chain audio_serve_ok match_id=%s path=%s target=%s media_type=%s size_bytes=%s elapsed_ms=%s",
+            match_id,
+            path,
+            target,
+            media_type,
+            target.stat().st_size,
+            max(0, int((time.perf_counter() - started_time) * 1000)),
+        )
     # 归档音频是内容寻址、写一次（文件名含 task_id + 句序号，重合成会换新 task_id→新 URL），可安全缓存。
     # 设为可缓存后，大屏「播当前句时预取下一句」能命中缓存→切换秒开，消除句间停顿。
     return FileResponse(target, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
@@ -605,7 +607,9 @@ async def serve_tts_audio(match_id: str, path: str) -> FileResponse:
 async def record_agent_tts_playback_client_log(body: Dict[str, Any], _principal: Principal = Depends(require_read_access)) -> Dict[str, Any]:
     """Record screen-side playback diagnostics into the same agent/TTS chain log."""
     level_name = str(body.get("level") or "info").strip().lower()
-    level = logging.ERROR if level_name == "error" else logging.WARNING if level_name == "warn" else logging.INFO
+    level = logging.ERROR if level_name == "error" else logging.WARNING if level_name == "warn" else logging.DEBUG
+    if level == logging.DEBUG and not logger.isEnabledFor(logging.DEBUG):
+        return {"ok": True, "data": {"recorded": False, "reason": "debug_disabled"}}
     payload = {
         "source": "screen_client",
         "level": level_name,
