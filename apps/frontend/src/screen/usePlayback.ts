@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
-import { authTokenForCurrentPage, post } from "../api/client";
+import { authTokenForCurrentPage, post, ttsAudioWsUrl } from "../api/client";
 import type { MatchSnapshot, RealtimeMessage } from "../types/contracts";
 import {
   emptyPosition,
@@ -30,6 +30,20 @@ const PLAYBACK_HEARTBEAT_MS = 5000;
 const SCREEN_TTS_VOLUME = 0.86;
 export const SCREEN_TTS_PLAYBACK_RATE = 1.0;
 const PLAYBACK_DEBUG_ENABLED = (import.meta.env.VITE_AGENT_TTS_PLAYBACK_DEBUG ?? "").toLowerCase() === "true";
+
+type WsAudioUrlState = { key: string; urls: Map<number, string>; ownedUrls: Set<string> };
+type TtsSentenceAudioMessage = {
+  type?: string;
+  speech_id?: unknown;
+  task_id?: unknown;
+  speaker_id?: unknown;
+  sentence_idx?: unknown;
+  audio_seq?: unknown;
+  mime_type?: unknown;
+  size_bytes?: unknown;
+  audio_base64?: unknown;
+  audio_url?: unknown;
+};
 
 function logPlayback(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
   if (level === "info" && !PLAYBACK_DEBUG_ENABLED) return;
@@ -102,7 +116,9 @@ export function usePlayback(
   const playbackHeartbeatRef = useRef<{ segment: string; atMs: number }>({ segment: "", atMs: 0 });
   // 事件快路：tts.sentence_ready 里直接带 audio_url / skipped，立刻并入 reducer 视图，省去快照 GET 往返。
   const eventChunksRef = useRef<{ key: string; map: Map<number, string> }>({ key: "", map: new Map() });
+  const wsAudioUrlsRef = useRef<WsAudioUrlState>({ key: "", urls: new Map(), ownedUrls: new Set() });
   const eventSkipsRef = useRef<{ key: string; set: Set<number> }>({ key: "", set: new Set() });
+  const lastSpeechKeyRef = useRef("");
   const audioEnabledRef = useRef(audioEnabled);
   const onPlaybackBlockedRef = useRef(onPlaybackBlocked);
   const snapshotRef = useRef<MatchSnapshot | null>(snapshot);
@@ -311,11 +327,23 @@ export function usePlayback(
     (now: number) => {
       const progressed = observeActiveAudioProgress(now, positionRef, activeElRef, activeSegmentRef, playbackProgressRef, mediaRef);
       const speech = projectSpeech(snapshotRef.current);
+      const speechKey = speech ? `${speech.speechId}:${speech.taskId}` : "";
+      if (lastSpeechKeyRef.current && lastSpeechKeyRef.current !== speechKey) {
+        clearWsAudioUrls(wsAudioUrlsRef.current);
+      }
+      lastSpeechKeyRef.current = speechKey;
       if (speech) {
         if (progressed) {
           maybeReportPlaybackHeartbeat(now, speech, positionRef, activeSegmentRef, playbackHeartbeatRef, mediaRef, matchId);
         }
-        const key = `${speech.speechId}:${speech.taskId}`;
+        const key = speechKey;
+        const ws = wsAudioUrlsRef.current;
+        if (ws.key === key && ws.urls.size) {
+          const have = new Set(speech.chunks.map((c) => c.sentenceIdx));
+          ws.urls.forEach((url, idx) => {
+            if (!have.has(idx)) speech.chunks.push({ sentenceIdx: idx, audioUrl: url });
+          });
+        }
         const ev = eventChunksRef.current;
         if (ev.key === key && ev.map.size) {
           const have = new Set(speech.chunks.map((c) => c.sentenceIdx));
@@ -586,6 +614,86 @@ export function usePlayback(
     runnerRef.current(nowEpoch());
   }, [snapshot]);
 
+  // 独立音频 WS：只承载 TTS 音频 bytes，避免大 payload 挤占主比赛 WS 的字幕/控制事件。
+  useEffect(() => {
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let retry: number | undefined;
+    let reconnectAttempt = 0;
+
+    function scheduleReconnect() {
+      if (cancelled) return;
+      const base = Math.min(15000, 1200 * 2 ** Math.min(reconnectAttempt, 4));
+      const delay = base + Math.floor(Math.random() * 400);
+      reconnectAttempt += 1;
+      retry = window.setTimeout(open, delay);
+    }
+
+    function open() {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(ttsAudioWsUrl(matchId));
+        socket.onopen = () => {
+          reconnectAttempt = 0;
+          logPlayback("info", "tts_audio_ws_open", { match_id: matchId });
+        };
+        socket.onclose = () => {
+          logPlayback("warn", "tts_audio_ws_closed", { match_id: matchId });
+          scheduleReconnect();
+        };
+        socket.onerror = () => {
+          logPlayback("warn", "tts_audio_ws_error", { match_id: matchId });
+          socket?.close();
+        };
+        socket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(String(event.data)) as TtsSentenceAudioMessage;
+            if (message.type !== "tts.sentence_audio") return;
+            const currentSpeech = projectSpeech(snapshotRef.current);
+            const expectedKey = currentSpeech ? `${currentSpeech.speechId}:${currentSpeech.taskId}` : "";
+            const result = rememberWsSentenceAudio(message, wsAudioUrlsRef, eventChunksRef, expectedKey, positionRef.current.nextIdx);
+            if (result.ok) {
+              logPlayback("info", "tts_audio_ws_received", {
+                match_id: matchId,
+                speech_id: result.speechId,
+                task_id: result.taskId,
+                sentence_idx: result.sentenceIdx,
+                mime_type: message.mime_type,
+                size_bytes: message.size_bytes,
+              });
+              const active = currentPlayRef.current;
+              if (active && active.speechId === result.speechId && active.taskId === result.taskId && result.sentenceIdx === active.idx + 1) {
+                preloadNext(result.url);
+              }
+              runnerRef.current(nowEpoch());
+            } else {
+              logPlayback("warn", "tts_audio_ws_ignored", { match_id: matchId, reason: result.reason });
+            }
+          } catch (err) {
+            logPlayback("warn", "tts_audio_ws_message_failed", {
+              match_id: matchId,
+              error_message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        };
+      } catch (err) {
+        logPlayback("warn", "tts_audio_ws_open_failed", {
+          match_id: matchId,
+          error_message: err instanceof Error ? err.message : String(err),
+        });
+        scheduleReconnect();
+      }
+    }
+
+    open();
+    return () => {
+      cancelled = true;
+      if (retry) window.clearTimeout(retry);
+      socket?.close();
+      clearWsAudioUrls(wsAudioUrlsRef.current);
+    };
+  }, [matchId]);
+
   // 触发器 2：实时事件——更新 suppress、并把 chunk/skip 即时并入快路；其余靠下一帧快照对账。
   useEffect(() => {
     if (!lastEvent) {
@@ -614,8 +722,18 @@ export function usePlayback(
       if (Number.isFinite(idx) && speechId && taskId) {
         const key = `${speechId}:${taskId}`;
         if (url) {
-          if (eventChunksRef.current.key !== key) eventChunksRef.current = { key, map: new Map() };
-          eventChunksRef.current.map.set(idx, url);
+          if (wsAudioUrlsRef.current.key === key && wsAudioUrlsRef.current.urls.has(idx)) {
+            logPlayback("info", "sentence_ready_ignored_ws_audio_available", {
+              match_id: matchId,
+              speech_id: speechId,
+              task_id: taskId,
+              sentence_idx: idx,
+              audio_url: url,
+            });
+          } else {
+            if (eventChunksRef.current.key !== key) eventChunksRef.current = { key, map: new Map() };
+            eventChunksRef.current.map.set(idx, url);
+          }
           logPlayback("info", "sentence_ready_received", {
             match_id: matchId,
             speech_id: speechId,
@@ -791,6 +909,71 @@ export function applyScreenTtsPlaybackRate(el: HTMLAudioElement, rate = SCREEN_T
   } catch {
     /* ignore */
   }
+}
+
+export function decodeBase64Audio(audioBase64: string): Uint8Array {
+  const binary = globalThis.atob(audioBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export function clearWsAudioUrls(state: WsAudioUrlState): void {
+  state.ownedUrls.forEach((url) => {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      /* ignore */
+    }
+  });
+  state.ownedUrls.clear();
+  state.urls.clear();
+  state.key = "";
+}
+
+export function rememberWsSentenceAudio(
+  message: TtsSentenceAudioMessage,
+  wsAudioUrlsRef: MutableRefObject<WsAudioUrlState>,
+  eventChunksRef: MutableRefObject<{ key: string; map: Map<number, string> }>,
+  expectedKey = "",
+  nextIdx = 0
+): { ok: true; speechId: string; taskId: string; sentenceIdx: number; url: string } | { ok: false; reason: string } {
+  const speechId = String(message.speech_id ?? "");
+  const taskId = String(message.task_id ?? "");
+  const idx = Number(message.sentence_idx ?? NaN);
+  const audioBase64 = String(message.audio_base64 ?? "");
+  if (!speechId || !taskId || !Number.isFinite(idx) || idx < 0 || !audioBase64) {
+    return { ok: false, reason: "invalid_payload" };
+  }
+  const key = `${speechId}:${taskId}`;
+  if (expectedKey && key !== expectedKey) {
+    return { ok: false, reason: "stale_speech_or_task" };
+  }
+  if (Number.isFinite(nextIdx) && idx < nextIdx) {
+    return { ok: false, reason: "already_resolved" };
+  }
+
+  const state = wsAudioUrlsRef.current;
+  if (state.key && state.key !== key) {
+    clearWsAudioUrls(state);
+  }
+  if (!state.key) state.key = key;
+  if (state.urls.has(idx)) {
+    return { ok: true, speechId, taskId, sentenceIdx: idx, url: state.urls.get(idx)! };
+  }
+
+  const mimeType = String(message.mime_type ?? "audio/wav") || "audio/wav";
+  const bytes = decodeBase64Audio(audioBase64);
+  const audioBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const url = URL.createObjectURL(new Blob([audioBuffer], { type: mimeType }));
+  state.urls.set(idx, url);
+  state.ownedUrls.add(url);
+  if (eventChunksRef.current.key === key) {
+    eventChunksRef.current.map.delete(idx);
+  }
+  return { ok: true, speechId, taskId, sentenceIdx: idx, url };
 }
 
 export async function postWithRetry(

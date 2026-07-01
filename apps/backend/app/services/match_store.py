@@ -49,7 +49,7 @@ from app.services.speech_gateway import (
     select_tts_gateway,
 )
 from app.services.sqlite_repo import SQLiteRepository, project_root
-from app.services.tts_live import tts_live_manager
+from app.services.tts_live import tts_audio_push_manager, tts_live_manager
 from app.services.voice_agent_client import publish_tts_sentence, start_voice_agent, stop_voice_agent
 from app.services.xfyun_gateway import TTSResult, XfyunASRGateway, XfyunGatewayError, XfyunTTSGateway
 
@@ -8580,6 +8580,16 @@ class MatchStore:
             "screen",
             speaker_id,
             sync_structured=False,
+        )
+        await tts_audio_push_manager.publish_sentence_audio(
+            match_id=match_id,
+            speech_id=speech_id,
+            task_id=task_id,
+            speaker_id=speaker_id,
+            sentence_idx=sentence_idx,
+            mime_type=archive_mime_type,
+            audio=archived_audio,
+            audio_url=audio_url,
         )
         _chain_log(
             logging.INFO,

@@ -362,6 +362,16 @@ export function ttsLiveWsUrl(matchId: string, speechId: string, taskId: string, 
   return `${base}/ws/tts-live/${matchId}/${speechId}/${taskId}/${sentenceIdx}?${params.toString()}`;
 }
 
+export function ttsAudioWsUrl(matchId: string): string {
+  const explicit = import.meta.env.VITE_WS_BASE as string | undefined;
+  const base = explicit || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const params = new URLSearchParams();
+  const token = authTokenForRole("screen");
+  if (token) params.set("token", token);
+  const suffix = params.toString();
+  return `${base}/ws/tts-audio/${matchId}${suffix ? `?${suffix}` : ""}`;
+}
+
 export type AuthRole = "admin" | "host" | "screen" | "speaker";
 
 export function authStorageKey(role: AuthRole, speakerId?: string): string {

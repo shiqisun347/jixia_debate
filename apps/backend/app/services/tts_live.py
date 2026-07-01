@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
@@ -120,3 +121,102 @@ class TTSLiveManager:
 
 
 tts_live_manager = TTSLiveManager()
+
+
+class TTSAudioPushManager:
+    """Independent WebSocket fanout for completed TTS audio blobs.
+
+    This intentionally does not use the match event log or the main match
+    WebSocket queues. Large audio payloads must not delay subtitles, controls,
+    or state updates on /ws/matches.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._subscribers: Dict[str, Set[asyncio.Queue]] = {}
+
+    async def subscribe(self, match_id: str) -> AsyncIterator[Dict[str, Any]]:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize())
+        async with self._lock:
+            subscribers = self._subscribers.setdefault(match_id, set())
+            subscribers.add(queue)
+        try:
+            while True:
+                message = await queue.get()
+                yield message
+                if message.get("type") == "error":
+                    break
+        finally:
+            async with self._lock:
+                subscribers = self._subscribers.get(match_id)
+                if subscribers:
+                    subscribers.discard(queue)
+                    if not subscribers:
+                        self._subscribers.pop(match_id, None)
+
+    async def publish_sentence_audio(
+        self,
+        *,
+        match_id: str,
+        speech_id: str,
+        task_id: str,
+        speaker_id: str,
+        sentence_idx: int,
+        mime_type: str,
+        audio: bytes,
+        audio_url: str,
+    ) -> None:
+        if not audio:
+            return
+        message = {
+            "type": "tts.sentence_audio",
+            "match_id": match_id,
+            "speech_id": speech_id,
+            "task_id": task_id,
+            "speaker_id": speaker_id,
+            "sentence_idx": sentence_idx,
+            "audio_seq": sentence_idx,
+            "created_at_ms": int(time.time() * 1000),
+            "mime_type": mime_type,
+            "size_bytes": len(audio),
+            "audio_base64": base64.b64encode(audio).decode("ascii"),
+            "audio_url": audio_url,
+        }
+        stale: List[asyncio.Queue] = []
+        async with self._lock:
+            subscribers = list(self._subscribers.get(match_id, set()))
+            for queue in subscribers:
+                try:
+                    queue.put_nowait(message)
+                except asyncio.QueueFull:
+                    stale.append(queue)
+            if stale:
+                current = self._subscribers.get(match_id)
+                if current:
+                    for queue in stale:
+                        current.discard(queue)
+                    if not current:
+                        self._subscribers.pop(match_id, None)
+                for queue in stale:
+                    self._notify_slow_consumer(queue)
+
+    def _queue_maxsize(self) -> int:
+        raw = os.getenv("PHDEBATE_TTS_AUDIO_WS_QUEUE_MAX", "32").strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 32
+        return max(4, min(256, value))
+
+    def _notify_slow_consumer(self, queue: asyncio.Queue) -> None:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait({"type": "error", "code": "audio_ws_queue_full", "message": "TTS audio WebSocket queue is full"})
+        except asyncio.QueueFull:
+            pass
+
+
+tts_audio_push_manager = TTSAudioPushManager()

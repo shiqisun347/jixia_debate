@@ -54,7 +54,7 @@ from app.services.livekit_service import (
 from app.services.preflight_report import build_preflight_report
 from app.services.speech_gateway import select_asr_gateway, select_tts_gateway
 from app.services.speech_diagnostics import build_speech_diagnostics
-from app.services.tts_live import tts_live_manager
+from app.services.tts_live import tts_audio_push_manager, tts_live_manager
 from app.services.voice_agent_client import VoiceAgentClientError, start_voice_agent, stop_voice_agent, voice_agent_health
 from app.services.ruleset_store import ruleset_store, generate_flow, FLOW_TEMPLATE
 from app.services.xiaoqi_store import xiaoqi_store, COMMANDS as XIAOQI_COMMANDS
@@ -1395,6 +1395,29 @@ async def tts_live_ws(
     resolved_match_id = snapshot["match"]["id"] if match_id == "current" else match_id
     try:
         async for message in tts_live_manager.subscribe((resolved_match_id, speech_id, task_id, sentence_idx)):
+            await websocket.send_json(message)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/tts-audio/{match_id}")
+async def tts_audio_ws(websocket: WebSocket, match_id: str) -> None:
+    snapshot = await store.get_snapshot()
+    if match_id not in {"current", snapshot["match"]["id"]}:
+        await websocket.close(code=1008)
+        return
+    if authorize_websocket(websocket, "screen", None) is None:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    resolved_match_id = snapshot["match"]["id"] if match_id == "current" else match_id
+    try:
+        async for message in tts_audio_push_manager.subscribe(resolved_match_id):
             await websocket.send_json(message)
     except WebSocketDisconnect:
         return

@@ -3,9 +3,12 @@ import {
   SCREEN_TTS_PLAYBACK_RATE,
   applyScreenTtsPlaybackRate,
   clearActiveAudio,
+  clearWsAudioUrls,
   computeResumeIdx,
+  decodeBase64Audio,
   observeActiveAudioProgress,
   postWithRetry,
+  rememberWsSentenceAudio,
   shouldSendPlaybackHeartbeat,
 } from "./usePlayback";
 import type { ActiveMediaState, PlaybackPosition } from "./playbackReducer";
@@ -70,6 +73,81 @@ describe("usePlayback audio cleanup", () => {
     expect(progressRef.current).toEqual({ segment: "", currentTime: 0, atMs: 0 });
   });
 
+});
+
+describe("usePlayback TTS audio websocket buffer", () => {
+  it("decodes base64 audio bytes", () => {
+    expect([...decodeBase64Audio("AQID/w==")]).toEqual([1, 2, 3, 255]);
+  });
+
+  it("keeps websocket audio by sentence index and removes URL fallback for the same segment", () => {
+    const created: string[] = [];
+    const revoked: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (() => {
+      const url = `blob:test-${created.length}`;
+      created.push(url);
+      return url;
+    }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = ((url: string) => revoked.push(url)) as typeof URL.revokeObjectURL;
+    try {
+      const ws = ref({ key: "", urls: new Map<number, string>(), ownedUrls: new Set<string>() });
+      const fallback = ref({ key: "speech:task", map: new Map([[1, "/api/audio/fallback.wav"]]) });
+
+      const result = rememberWsSentenceAudio(
+        {
+          type: "tts.sentence_audio",
+          speech_id: "speech",
+          task_id: "task",
+          sentence_idx: 1,
+          mime_type: "audio/wav",
+          audio_base64: "AQID",
+        },
+        ws,
+        fallback,
+        "speech:task",
+        0
+      );
+
+      expect(result).toEqual({ ok: true, speechId: "speech", taskId: "task", sentenceIdx: 1, url: "blob:test-0" });
+      expect(ws.current.key).toBe("speech:task");
+      expect(ws.current.urls.get(1)).toBe("blob:test-0");
+      expect(fallback.current.map.has(1)).toBe(false);
+
+      clearWsAudioUrls(ws.current);
+      expect(revoked).toEqual(["blob:test-0"]);
+      expect(ws.current.key).toBe("");
+    } finally {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
+  it("rejects stale or already resolved websocket audio", () => {
+    const ws = ref({ key: "", urls: new Map<number, string>(), ownedUrls: new Set<string>() });
+    const fallback = ref({ key: "", map: new Map<number, string>() });
+
+    expect(
+      rememberWsSentenceAudio(
+        { speech_id: "old", task_id: "task", sentence_idx: 1, audio_base64: "AQ==" },
+        ws,
+        fallback,
+        "speech:task",
+        0
+      )
+    ).toEqual({ ok: false, reason: "stale_speech_or_task" });
+
+    expect(
+      rememberWsSentenceAudio(
+        { speech_id: "speech", task_id: "task", sentence_idx: 1, audio_base64: "AQ==" },
+        ws,
+        fallback,
+        "speech:task",
+        2
+      )
+    ).toEqual({ ok: false, reason: "already_resolved" });
+  });
 });
 
 describe("usePlayback active audio progress observation", () => {
