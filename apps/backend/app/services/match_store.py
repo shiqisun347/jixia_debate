@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import time
@@ -56,11 +57,54 @@ from app.services.xfyun_gateway import TTSResult, XfyunASRGateway, XfyunGatewayE
 logger = logging.getLogger("phdebate.agent_tts_chain")
 
 
+def configure_agent_tts_chain_logging() -> None:
+    """Mirror the agent/TTS/playback chain logger into runtime/logs.
+
+    The service manager still receives stdout/stderr via normal logging, while this
+    dedicated file gives现场排障 a single artifact to tail or package.
+    """
+    if getattr(logger, "_phdebate_file_logging_configured", False):
+        return
+    log_file_raw = os.getenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_FILE", "").strip()
+    log_file = Path(log_file_raw) if log_file_raw else project_root() / "runtime" / "logs" / "agent-tts-chain.log"
+    if not log_file.is_absolute():
+        log_file = project_root() / log_file
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=int(os.getenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_MAX_BYTES", str(50 * 1024 * 1024))),
+            backupCount=int(os.getenv("PHDEBATE_AGENT_TTS_CHAIN_LOG_BACKUPS", "5")),
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = True
+        setattr(logger, "_phdebate_file_logging_configured", True)
+        setattr(logger, "_phdebate_file_logging_path", str(log_file))
+        if not getattr(logger, "_phdebate_startup_marker_logged", False):
+            marker_payload = {
+                "event": "agent_tts_chain_log_startup",
+                "message": "agent/TTS/playback chain file logging is ready",
+                "log_file": str(log_file),
+                "pid": os.getpid(),
+                "cwd": os.getcwd(),
+            }
+            logger.info("agent_tts_chain startup_marker %s", json.dumps(marker_payload, ensure_ascii=False, default=str))
+            logger.info("agent_tts_chain startup_marker log_file=%s", log_file)
+            logger.info("agent_tts_chain startup_marker ready=1")
+            setattr(logger, "_phdebate_startup_marker_logged", True)
+    except Exception:  # noqa: BLE001 - logging setup must never break app startup.
+        logger.exception("agent_tts_chain failed to configure file logging")
+
+
 def _chain_elapsed_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
 def _chain_log(level: int, event: str, **fields: Any) -> None:
+    configure_agent_tts_chain_logging()
     payload = {"event": event, **fields}
     logger.log(level, "agent_tts_chain %s", json.dumps(payload, ensure_ascii=False, default=str))
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
-import { post } from "../api/client";
+import { authTokenForCurrentPage, post } from "../api/client";
 import type { MatchSnapshot, RealtimeMessage } from "../types/contracts";
 import {
   emptyPosition,
@@ -38,6 +38,24 @@ function logPlayback(level: "info" | "warn" | "error", event: string, fields: Re
     console.warn("[agent-tts-playback]", payload);
   } else {
     console.info("[agent-tts-playback]", payload);
+  }
+  sendPlaybackLog(level, event, payload);
+}
+
+function sendPlaybackLog(level: "info" | "warn" | "error", event: string, payload: Record<string, unknown>): void {
+  try {
+    const token = authTokenForCurrentPage();
+    void fetch(`${import.meta.env.VITE_API_BASE ?? ""}/api/client-logs/agent-tts-playback`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ level, event, payload }),
+      keepalive: true
+    }).catch(() => undefined);
+  } catch {
+    /* Client log shipping must never affect playback. */
   }
 }
 

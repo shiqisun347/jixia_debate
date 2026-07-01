@@ -42,7 +42,7 @@ from app.auth import (
     runtime_auth_status,
     update_runtime_auth_config,
 )
-from app.services.match_store import MatchStateError, store
+from app.services.match_store import MatchStateError, configure_agent_tts_chain_logging, store
 from app.services.livekit_service import (
     LiveKitConfigError,
     LiveKitTokenRequest,
@@ -60,6 +60,7 @@ from app.services.xiaoqi_store import xiaoqi_store, COMMANDS as XIAOQI_COMMANDS
 
 
 logger = logging.getLogger("phdebate.agent_tts_chain")
+configure_agent_tts_chain_logging()
 _timer_task: Optional[asyncio.Task] = None
 
 
@@ -598,6 +599,21 @@ async def serve_tts_audio(match_id: str, path: str) -> FileResponse:
     # 归档音频是内容寻址、写一次（文件名含 task_id + 句序号，重合成会换新 task_id→新 URL），可安全缓存。
     # 设为可缓存后，大屏「播当前句时预取下一句」能命中缓存→切换秒开，消除句间停顿。
     return FileResponse(target, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.post("/api/client-logs/agent-tts-playback")
+async def record_agent_tts_playback_client_log(body: Dict[str, Any], _principal: Principal = Depends(require_read_access)) -> Dict[str, Any]:
+    """Record screen-side playback diagnostics into the same agent/TTS chain log."""
+    level_name = str(body.get("level") or "info").strip().lower()
+    level = logging.ERROR if level_name == "error" else logging.WARNING if level_name == "warn" else logging.INFO
+    payload = {
+        "source": "screen_client",
+        "level": level_name,
+        "event": body.get("event"),
+        "payload": body.get("payload") if isinstance(body.get("payload"), dict) else body,
+    }
+    logger.log(level, "agent_tts_chain client_playback %s", json.dumps(payload, ensure_ascii=False, default=str))
+    return {"ok": True, "data": {"recorded": True}}
 
 
 @app.patch("/api/matches/{match_id}/phases/{phase_id}")

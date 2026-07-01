@@ -384,7 +384,7 @@ export function saveAuthToken(role: AuthRole, token: string, speakerId?: string)
   window.localStorage.setItem(authStorageKey(role, speakerId), token.trim());
 }
 
-function authTokenForCurrentPage(): string {
+export function authTokenForCurrentPage(): string {
   const path = window.location.pathname;
   if (path.startsWith("/admin")) return authTokenForRole("admin");
   if (path.startsWith("/host")) return authTokenForRole("host");
