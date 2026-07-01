@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT=${ROOT:-$(pwd)}
 APP_USER=${APP_USER:-ubuntu}
 BACKEND_SERVICE=jixia-debate-6016.service
 VOICE_AGENT_SERVICE=jixia-voice-agent-6008.service
@@ -56,7 +57,9 @@ wait_tcp_closed() {
 }
 
 main() {
+  log "using ROOT=${ROOT}"
   log "stopping jixia backend and voice agent"
+  user_systemctl daemon-reload >/dev/null 2>&1 || true
   user_systemctl stop "$VOICE_AGENT_SERVICE" || true
   user_systemctl stop "$BACKEND_SERVICE" || true
 

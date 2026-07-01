@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=/home/ubuntu/sunsq/debateall
+ROOT=${ROOT:-$(pwd)}
 APP_USER=${APP_USER:-ubuntu}
 BACKEND_SERVICE=jixia-debate-6016.service
 VOICE_AGENT_SERVICE=jixia-voice-agent-6008.service
@@ -29,6 +29,66 @@ user_systemctl() {
     export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
     systemctl --user "$@"
   fi
+}
+
+install_user_unit() {
+  local service_name=$1
+  local content=$2
+  if (( EUID == 0 )); then
+    local app_home
+    app_home=$(getent passwd "$APP_USER" | cut -d: -f6)
+    local unit_dir="${app_home}/.config/systemd/user"
+    install -d -o "$APP_USER" -g "$APP_USER" "$unit_dir"
+    printf '%s\n' "$content" >"${unit_dir}/${service_name}"
+    chown "$APP_USER:$APP_USER" "${unit_dir}/${service_name}"
+  else
+    local unit_dir="${HOME}/.config/systemd/user"
+    mkdir -p "$unit_dir"
+    printf '%s\n' "$content" >"${unit_dir}/${service_name}"
+  fi
+}
+
+install_systemd_units() {
+  mkdir -p "$ROOT/logs"
+  log "installing user systemd units for ROOT=${ROOT}"
+  install_user_unit "$BACKEND_SERVICE" "[Unit]
+Description=jixia_debate on port 6016
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ROOT}/apps/backend
+EnvironmentFile=${ROOT}/config.env
+ExecStart=${ROOT}/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 6016 --no-access-log
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+StandardOutput=append:${ROOT}/logs/systemd.stdout.log
+StandardError=append:${ROOT}/logs/systemd.stderr.log
+
+[Install]
+WantedBy=default.target"
+
+  install_user_unit "$VOICE_AGENT_SERVICE" "[Unit]
+Description=jixia_debate voice agent on port 6008
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${ROOT}/apps/voice_agent
+EnvironmentFile=${ROOT}/config.env
+Environment=PYTHONPATH=${ROOT}/apps/voice_agent
+ExecStart=${ROOT}/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 6008 --no-access-log
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+StandardOutput=append:${ROOT}/logs/voice-agent.stdout.log
+StandardError=append:${ROOT}/logs/voice-agent.stderr.log
+
+[Install]
+WantedBy=default.target"
 }
 
 wait_tcp() {
@@ -106,6 +166,9 @@ PY
 
 require_paths() {
   test -d "$ROOT"
+  test -x "$ROOT/.venv/bin/uvicorn"
+  test -d "$ROOT/apps/backend"
+  test -d "$ROOT/apps/voice_agent"
   run_sudo test -x /root/autodl-tmp/funasr-nano-venv/bin/python
   run_sudo test -f /root/autodl-tmp/funasr-nano-service/serve_realtime_ws_compat.py
   run_sudo test -d /root/autodl-tmp/LightTTS
@@ -139,6 +202,7 @@ main() {
   log "checking sudo and required paths"
   run_sudo true
   require_paths
+  install_systemd_units
 
   log "stopping services not used by this deployment"
   run_sudo supervisorctl stop qwen3-asr >/dev/null 2>&1 || true
@@ -154,7 +218,9 @@ main() {
   run_sudo supervisorctl restart "$TTS_SERVICE" >/dev/null || run_sudo supervisorctl start "$TTS_SERVICE" >/dev/null
 
   log "restarting jixia backend and voice agent"
-  user_systemctl daemon-reload >/dev/null 2>&1 || true
+  user_systemctl daemon-reload
+  user_systemctl enable "$BACKEND_SERVICE" >/dev/null 2>&1 || true
+  user_systemctl enable "$VOICE_AGENT_SERVICE" >/dev/null 2>&1 || true
   user_systemctl restart "$BACKEND_SERVICE"
   user_systemctl restart "$VOICE_AGENT_SERVICE"
 
