@@ -556,10 +556,11 @@ async def serve_match_image(filename: str) -> FileResponse:
 @app.get("/api/audio/{match_id}/{path:path}")
 async def serve_tts_audio(match_id: str, path: str) -> FileResponse:
     """Serve archived TTS audio files for browser playback on the screen."""
-    from app.services.sqlite_repo import project_root
-    audio_root = (project_root() / "apps" / "backend" / "storage" / "audio").resolve()
+    audio_root = store.audio_root_path().resolve()
     target = (audio_root / match_id / path).resolve()
-    if not str(target).startswith(str(audio_root)):
+    try:
+        target.relative_to(audio_root)
+    except ValueError:
         raise HTTPException(status_code=404, detail="not found")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="audio file not found")

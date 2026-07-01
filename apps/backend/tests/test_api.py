@@ -78,6 +78,19 @@ def test_health() -> None:
     assert response.json()["ok"] is True
 
 
+def test_archived_audio_served_from_configured_audio_root(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PHDEBATE_AUDIO_DIR", str(tmp_path / "audio"))
+    audio_path = store.audio_root_path() / "match_001" / "phase_1" / "speech_1" / "tts.wav"
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"RIFF$\x00\x00\x00WAVEfmt ")
+
+    response = client.get("/api/audio/match_001/phase_1/speech_1/tts.wav")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.content == b"RIFF$\x00\x00\x00WAVEfmt "
+
+
 def test_standard_ruleset_template_includes_third_debater_before_free_debate() -> None:
     names = [item["name"] for item in parse_flow(FLOW_TEMPLATE)["nodes"]]
 
