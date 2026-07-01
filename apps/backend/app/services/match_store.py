@@ -5952,10 +5952,10 @@ class MatchStore:
 
     def _normalize_audio_output_mode(self, mode: str) -> str:
         value = str(mode or "").strip()
-        if value not in {"host", "admin", "off"}:
+        if value not in {"host", "admin", "screen", "off"}:
             raise MatchStateError(
                 "invalid_audio_output",
-                "现场声音输出端必须为 host、admin 或 off。",
+                "现场声音输出端必须为 host、admin、screen 或 off。",
                 {"mode": mode},
             )
         return value
@@ -5963,6 +5963,8 @@ class MatchStore:
     def _audio_output_label(self, mode: str) -> str:
         if mode == "admin":
             return "技术后台电脑"
+        if mode == "screen":
+            return "大屏幕电脑"
         if mode == "off":
             return "关闭浏览器提示音"
         return "主持导播台电脑"

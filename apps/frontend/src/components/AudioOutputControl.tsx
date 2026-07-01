@@ -23,7 +23,8 @@ const audioOutputOptions: Array<{
 export function AudioOutputControl({ state, activeRole, onModeChange, onTest }: AudioOutputControlProps) {
   const mode = state?.mode ?? "host";
   const isLocalOutput = mode === activeRole;
-  const roleLabel = activeRole === "host" ? "本机是主持导播台" : "本机是技术后台";
+  const roleLabel =
+    activeRole === "host" ? "本机是主持导播台" : activeRole === "screen" ? "本机是大屏幕电脑" : "本机是技术后台";
   const currentLabel = mode === "off" ? "已关闭" : state?.label ?? audioOutputLabel(mode);
 
   return (

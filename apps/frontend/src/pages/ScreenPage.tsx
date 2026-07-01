@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { Volume2 } from "lucide-react";
+import { Volume2, VolumeX } from "lucide-react";
 import { ClockTile } from "../components/ClockTile";
 import { AuthPrompt } from "../components/AuthPrompt";
 import { clockByName, seatLabel, sideClass, sideLabel, speakerLabel } from "../state/format";
@@ -43,12 +43,14 @@ export function ScreenPage({ matchId }: ScreenPageProps) {
 
   const livekitAudio = useLiveKitAudio({ matchId, role: "screen", enabled: audioEnabled });
   const livekitHasAudio = livekitAudio.status === "connected" && livekitAudio.audioTrackCount > 0;
+  const audioOutputMode = snapshot?.audio_output?.mode ?? "screen";
+  const audioOutputOff = audioOutputMode === "off";
 
   // 大屏 TTS 播放：全部交给确定性的对账状态机（src/screen/playbackReducer.ts + usePlayback）。
   // 快照唯一真相、看门狗自愈、无 live MSE —— 历史上的卡死/超慢/停不下来在那里被单测覆盖。
   // LiveKit 只有真正订阅到 voice-agent/AI TTS 音轨时才接管声音；人类辩手麦克风不会在大屏外放，
   // 也不会关闭后端归档音频兜底播放。
-  const { unlock } = usePlayback(matchId, snapshot, lastEvent, audioEnabled && !livekitHasAudio, setAudioEnabled, () => {
+  const { unlock } = usePlayback(matchId, snapshot, lastEvent, audioEnabled && !audioOutputOff && !livekitHasAudio, setAudioEnabled, () => {
     setAudioEnabled(true);
     setAudioUnlocked(false);
   });
@@ -57,22 +59,26 @@ export function ScreenPage({ matchId }: ScreenPageProps) {
   const enableAudioFromGate = () => {
     setAudioEnabled(true);
     unlock();
-    setAudioUnlocked(true);
+    void playBellCue(450).then((ok) => {
+      setAudioUnlocked(ok);
+    });
   };
 
   // 打铃提示音（与 TTS 播放无关，独立处理）。
   useEffect(() => {
+    if (audioOutputOff) return;
     if (!lastEvent || lastEvent.type !== "clock.bell_triggered") return;
     const durationMs = Number(lastEvent.payload.duration_ms ?? 800);
-    playBellCue(durationMs);
-  }, [lastEvent]);
+    void playBellCue(durationMs);
+  }, [audioOutputOff, lastEvent]);
 
   if (!snapshot && loadError) return <AuthPrompt role="screen" message={loadError} />;
   if (!snapshot) return <div className="loading">正在连接大屏状态...</div>;
   return (
     <>
       <ScreenView snapshot={snapshot} />
-      {audioEnabled && !audioUnlocked && <AudioUnlockGate onEnable={enableAudioFromGate} />}
+      {audioEnabled && !audioOutputOff && !audioUnlocked && <AudioUnlockGate onEnable={enableAudioFromGate} />}
+      {audioOutputOff ? <ScreenAudioStatus off /> : audioUnlocked ? <ScreenAudioStatus onTest={() => void playBellCue(450)} /> : null}
     </>
   );
 }
@@ -85,6 +91,15 @@ function AudioUnlockGate({ onEnable }: { onEnable: () => void }) {
         <span>启用现场声音</span>
       </button>
     </div>
+  );
+}
+
+function ScreenAudioStatus({ off = false, onTest }: { off?: boolean; onTest?: () => void }) {
+  return (
+    <button type="button" className={`screen-audio-status ${off ? "off" : ""}`} onClick={off ? undefined : onTest} disabled={off}>
+      {off ? <VolumeX size={15} /> : <Volume2 size={15} />}
+      <span>{off ? "现场声音关闭" : "测试大屏声音"}</span>
+    </button>
   );
 }
 

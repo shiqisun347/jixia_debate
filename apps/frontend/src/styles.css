@@ -7537,6 +7537,35 @@ textarea {
   border-color: rgba(160, 219, 255, 0.9);
   background: rgba(24, 50, 92, 0.96);
 }
+.screen-audio-status {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(133, 202, 255, 0.42);
+  background: rgba(10, 24, 48, 0.74);
+  color: #dcefff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.screen-audio-status:hover,
+.screen-audio-status:focus-visible {
+  outline: none;
+  border-color: rgba(160, 219, 255, 0.86);
+  background: rgba(15, 35, 68, 0.88);
+}
+.screen-audio-status.off {
+  border-color: rgba(255, 203, 112, 0.42);
+  color: #ffe0a3;
+  cursor: not-allowed;
+}
 
 /* ===================== 观众投票：移动端投票页（点选排序，参考 image.png 深色科技风） ===================== */
 .vote-shell--rank {

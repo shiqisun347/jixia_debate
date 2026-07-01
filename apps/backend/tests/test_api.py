@@ -974,6 +974,11 @@ def test_host_shortcut_endpoints_advance_bell_and_force_stop_current_speech() ->
     assert audio_output.json()["data"]["audio_output"]["mode"] == "admin"
     assert audio_output.json()["data"]["audio_output"]["updated_by"] == "host"
 
+    screen_audio_output = client.put("/api/matches/match_001/audio-output", json={"mode": "screen", "reason": "test_screen_output"})
+    assert screen_audio_output.status_code == 200
+    assert screen_audio_output.json()["data"]["audio_output"]["mode"] == "screen"
+    assert screen_audio_output.json()["data"]["audio_output"]["label"] == "大屏幕电脑"
+
     invalid_audio_output = client.put("/api/matches/match_001/audio-output", json={"mode": "console"})
     assert invalid_audio_output.status_code == 409
     assert invalid_audio_output.json()["error"]["code"] == "invalid_audio_output"
@@ -981,7 +986,7 @@ def test_host_shortcut_endpoints_advance_bell_and_force_stop_current_speech() ->
     bell = client.post("/api/matches/match_001/bell", json={"kind": "manual", "label": "测试铃"})
     assert bell.status_code == 200
     assert bell.json()["data"]["last_seq"] >= after_next["last_seq"]
-    assert bell.json()["data"]["audio_output"]["mode"] == "admin"
+    assert bell.json()["data"]["audio_output"]["mode"] == "screen"
 
     current_phase = next(
         phase
