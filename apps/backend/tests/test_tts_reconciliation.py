@@ -77,7 +77,7 @@ def _seed_running_speech(speech_id: str = "sp_test", speaker_id: str = "spk_aff_
 
 
 def test_stable_tts_segments_do_not_create_tiny_first_chunk(monkeypatch) -> None:
-    _set_tts_settings(stability_mode="stable", min_segment_chars=80, max_segment_chars=120)
+    _set_tts_settings(stability_mode="stable", min_segment_chars=18, max_segment_chars=30)
     text = (
         "第一，我们讨论人工智能时代的学习方式，不能只看工具替代了多少操作，"
         "更要看人是否还能理解问题如何被拆解、验证和复盘。"
@@ -88,9 +88,25 @@ def test_stable_tts_segments_do_not_create_tiny_first_chunk(monkeypatch) -> None
 
     segments = store._stable_tts_segments(text)
 
-    assert len(segments) >= 2
-    assert len(segments[0]) >= 80
-    assert all(len(segment) >= 40 for segment in segments[:-1])
+    assert len(segments) >= 6
+    assert all(len(segment) <= 30 for segment in segments)
+    assert any(segment.endswith("，") for segment in segments)
+
+
+def test_stable_tts_segments_keep_lighttts_chunks_within_30_chars(monkeypatch) -> None:
+    _set_tts_settings(stability_mode="stable", min_segment_chars=18, max_segment_chars=30)
+    text = (
+        "但这忽略了机会成本。对于绝大多数人，花费数千小时调试一个分号错误，"
+        "远不如学习如何精准提问、如何整合多模态信息来得重要。"
+        "当AI能将自然语言瞬间转化为可执行代码时，"
+    )
+
+    segments = store._stable_tts_segments(text)
+
+    assert all(len(segment) <= 30 for segment in segments)
+    assert segments[0] == "但这忽略了机会成本。"
+    assert segments[1].endswith("，")
+    assert segments[-1].endswith("，")
 
 
 def test_stable_tts_text_synthesis_runs_segments_sequentially(monkeypatch) -> None:

@@ -125,15 +125,15 @@ def test_lighttts_presets_migrate_measured_voice_timing(monkeypatch, tmp_path) -
     assert "您的质疑只是情绪宣泄" in presets["voice_lighttts_debate_3"]["prompt_text"]
     assert presets["voice_lighttts_debate_1"]["agent_speech_time_factor"] == 1.0
     assert presets["voice_lighttts_debate_3"]["agent_max_token_margin"] == 1.5
-    assert presets["voice_lighttts_debate_1"]["first_segment_chars"] == 28
-    assert presets["voice_lighttts_debate_1"]["min_segment_chars"] == 72
-    assert presets["voice_lighttts_debate_1"]["max_segment_chars"] == 150
+    assert presets["voice_lighttts_debate_1"]["first_segment_chars"] == 18
+    assert presets["voice_lighttts_debate_1"]["min_segment_chars"] == 18
+    assert presets["voice_lighttts_debate_1"]["max_segment_chars"] == 30
     assert settings["tts_speaking_cps"] == 5.6
     assert settings["agent_speech_time_factor"] == 1.0
     assert settings["agent_max_token_margin"] == 1.5
-    assert settings["first_segment_chars"] == 28
-    assert settings["min_segment_chars"] == 72
-    assert settings["max_segment_chars"] == 150
+    assert settings["first_segment_chars"] == 18
+    assert settings["min_segment_chars"] == 18
+    assert settings["max_segment_chars"] == 30
 
 
 def test_lighttts_presets_force_cosyvoice3_and_drop_unknown_prompt_voices(monkeypatch, tmp_path) -> None:

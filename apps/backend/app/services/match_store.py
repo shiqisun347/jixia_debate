@@ -7964,14 +7964,14 @@ class MatchStore:
         return raw not in {"0", "false", "no", "off", "realtime", "fast", "legacy"}
 
     def _tts_min_segment_chars(self) -> int:
-        return self._tts_setting_int("min_segment_chars", "PHDEBATE_TTS_MIN_SEGMENT_CHARS", 32, 24, 180)
+        return self._tts_setting_int("min_segment_chars", "PHDEBATE_TTS_MIN_SEGMENT_CHARS", 18, 8, 30)
 
     def _tts_max_segment_chars(self) -> int:
-        value = self._tts_setting_int("max_segment_chars", "PHDEBATE_TTS_MAX_SEGMENT_CHARS", 72, 32, 260)
-        return max(self._tts_min_segment_chars(), min(260, value))
+        value = self._tts_setting_int("max_segment_chars", "PHDEBATE_TTS_MAX_SEGMENT_CHARS", 30, 8, 30)
+        return max(self._tts_min_segment_chars(), min(30, value))
 
     def _tts_first_stable_segment_chars(self) -> int:
-        return self._tts_setting_int("first_segment_chars", "PHDEBATE_TTS_FIRST_STABLE_SEGMENT_CHARS", 24, 16, 80)
+        return self._tts_setting_int("first_segment_chars", "PHDEBATE_TTS_FIRST_STABLE_SEGMENT_CHARS", 18, 8, 40)
 
     def _stable_tts_segments(self, full_text: str) -> List[str]:
         text = normalize_tts_text(full_text)
@@ -7991,7 +7991,7 @@ class MatchStore:
                     current = piece
                     continue
                 candidate = current + piece
-                if len(candidate) <= max_chars or len(current) < min_chars:
+                if len(candidate) <= max_chars:
                     current = candidate
                     continue
                 segments.append(current)
@@ -8001,7 +8001,7 @@ class MatchStore:
 
         if len(segments) > 1 and len(segments[-1]) < min_chars:
             tail = segments.pop()
-            if len(segments[-1]) + len(tail) <= max_chars + 24:
+            if len(segments[-1]) + len(tail) <= max_chars:
                 segments[-1] += tail
             else:
                 segments.append(tail)

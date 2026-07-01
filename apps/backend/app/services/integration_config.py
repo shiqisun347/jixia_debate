@@ -792,17 +792,16 @@ class IntegrationConfigStore:
                     "response_format": "pcm",
                     "speech_rate": 1.0,
                     "stream": True,
-                    # 归档播放路径（PHDEBATE_TTS_LIVE_STREAM=0，比赛稳定首选）下，首音延迟≈首段合成耗时，
-                    # 因此首段仍保持较短以尽快出声，后续分段放宽到 72-150 字；减少独立 WAV
-                    # 切换次数，配合 PCM 首尾裁静音，避免每句边界出现机械卡顿。
+                    # LightTTS 流式接口对 70+ 字长段容易提前结束但仍返回 200。
+                    # 控制单段在 30 字以内，优先按标点切分，避免不完整音频被归档。
                     # 线上归档音频实测：当前 LightTTS 辩手音色多在 5.2-5.9 字/秒；
                     # 按音色 preset 覆盖精确 cps，provider 默认取第一音色附近的保守值。
                     "tts_speaking_cps": 5.6,
                     "agent_speech_time_factor": 1.0,
                     "agent_max_token_margin": 1.5,
-                    "first_segment_chars": 28,
-                    "min_segment_chars": 72,
-                    "max_segment_chars": 150,
+                    "first_segment_chars": 18,
+                    "min_segment_chars": 18,
+                    "max_segment_chars": 30,
                     "sentence_concurrency": 2,
                     "sentence_timeout_s": 90,
                     "loudness_normalize": False,
