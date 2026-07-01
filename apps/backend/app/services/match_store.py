@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import time
@@ -50,6 +51,18 @@ from app.services.sqlite_repo import SQLiteRepository, project_root
 from app.services.tts_live import tts_live_manager
 from app.services.voice_agent_client import publish_tts_sentence, start_voice_agent, stop_voice_agent
 from app.services.xfyun_gateway import TTSResult, XfyunASRGateway, XfyunGatewayError, XfyunTTSGateway
+
+
+logger = logging.getLogger("phdebate.agent_tts_chain")
+
+
+def _chain_elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+def _chain_log(level: int, event: str, **fields: Any) -> None:
+    payload = {"event": event, **fields}
+    logger.log(level, "agent_tts_chain %s", json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def _select_asr_gateway():
@@ -1924,6 +1937,17 @@ class MatchStore:
         # 未命中/失效/被关闭则返回 None，原样走下面的 live 路径——零行为变化。
         prepared = self._take_prepared_speech(speaker_id, mode)
         if prepared is not None:
+            _chain_log(
+                logging.INFO,
+                "agent_prepared_speech_hit",
+                speech_id=prepared.get("speech_id"),
+                task_id=prepared.get("task_id"),
+                speaker_id=speaker_id,
+                mode=mode,
+                expected_sentence_count=prepared.get("expected_sentence_count"),
+                text_length=len(str(prepared.get("full_text") or "")),
+                text=prepared.get("full_text"),
+            )
             await self._activate_prepared_speech(prepared, speaker, is_self_intro)
             return
 
@@ -1951,6 +1975,22 @@ class MatchStore:
                 tts_selection = self._select_tts_for_speech(task_id, speech_id, speaker)
             except SpeechProviderError:
                 tts_enabled = False
+        _chain_log(
+            logging.INFO,
+            "agent_task_start",
+            match_id=payload.get("match_id"),
+            phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            agent_config_id=speaker.get("agent_config_id"),
+            endpoint=endpoint_label,
+            mode=mode,
+            tts_enabled=tts_enabled,
+            tts_provider=(tts_selection.provider if tts_selection else None),
+            target_chars=payload.get("target_chars"),
+            max_token=payload.get("max_token"),
+        )
         self.repo.save_agent_request_started(
             match_id=payload["match_id"],
             task_id=task_id,
@@ -2068,6 +2108,20 @@ class MatchStore:
                         speaker_id,
                         persist=False,
                     )
+                    _chain_log(
+                        logging.INFO,
+                        "agent_text_delta",
+                        match_id=payload.get("match_id"),
+                        phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                        task_id=task_id,
+                        speech_id=speech_id,
+                        speaker_id=speaker_id,
+                        delta_length=len(delta),
+                        total_length=len(full_text),
+                        delta=delta,
+                        content_preview=full_text[-160:],
+                        elapsed_ms=_chain_elapsed_ms(agent_started_time),
+                    )
                     # Kick off TTS for each newly available segment. Prefer full
                     # sentences, but allow long comma-separated prefixes so the
                     # first audio can start before the agent finishes a paragraph.
@@ -2079,6 +2133,21 @@ class MatchStore:
                             if not sentence or new_sent_chars <= tts_sent_chars:
                                 break
                             tts_sent_chars = new_sent_chars
+                            _chain_log(
+                                logging.INFO,
+                                "tts_sentence_queued",
+                                match_id=payload.get("match_id"),
+                                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                                task_id=task_id,
+                                speech_id=speech_id,
+                                speaker_id=speaker_id,
+                                sentence_idx=tts_sentence_idx,
+                                mode="stable_live",
+                                text_length=len(sentence),
+                                text=sentence,
+                                total_text_length=len(full_text),
+                                agent_elapsed_ms=_chain_elapsed_ms(agent_started_time),
+                            )
                             tts_sentence_tasks.append(asyncio.create_task(synthesize_sentence(sentence, tts_sentence_idx)))
                             tts_sentence_idx += 1
                             async with self._lock:
@@ -2106,6 +2175,21 @@ class MatchStore:
                             tts_sent_chars = new_sent_chars  # always advance, even for short/empty
                             if not sentence:
                                 break
+                            _chain_log(
+                                logging.INFO,
+                                "tts_sentence_queued",
+                                match_id=payload.get("match_id"),
+                                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                                task_id=task_id,
+                                speech_id=speech_id,
+                                speaker_id=speaker_id,
+                                sentence_idx=tts_sentence_idx,
+                                mode="live",
+                                text_length=len(sentence),
+                                text=sentence,
+                                total_text_length=len(full_text),
+                                agent_elapsed_ms=_chain_elapsed_ms(agent_started_time),
+                            )
                             tts_sentence_tasks.append(asyncio.create_task(synthesize_sentence(sentence, tts_sentence_idx)))
                             tts_sentence_idx += 1
                             async with self._lock:
@@ -2127,8 +2211,34 @@ class MatchStore:
                     continue
                 if event_type == "final":
                     full_text, _ = self._clamp_agent_text_to_budget(event.get("content") or full_text, payload)
+                    _chain_log(
+                        logging.INFO,
+                        "agent_text_final_event",
+                        match_id=payload.get("match_id"),
+                        phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                        task_id=task_id,
+                        speech_id=speech_id,
+                        speaker_id=speaker_id,
+                        text_length=len(full_text),
+                        text=full_text,
+                        elapsed_ms=_chain_elapsed_ms(agent_started_time),
+                    )
                     break
         except AgentGatewayError as exc:
+            _chain_log(
+                logging.ERROR,
+                "agent_task_failed",
+                match_id=payload.get("match_id"),
+                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                error_code=exc.code,
+                error_message=exc.message,
+                partial_text_length=len(full_text),
+                partial_text=full_text,
+                elapsed_ms=_chain_elapsed_ms(agent_started_time),
+            )
             self.repo.finish_agent_request(
                 match_id=payload["match_id"],
                 task_id=task_id,
@@ -2142,12 +2252,26 @@ class MatchStore:
             await self._fail_agent_task(task_id, speaker_id, exc)
             return
 
+        agent_elapsed_ms = _chain_elapsed_ms(agent_started_time)
+        _chain_log(
+            logging.INFO,
+            "agent_task_completed",
+            match_id=payload.get("match_id"),
+            phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            text_length=len(full_text),
+            text=full_text,
+            elapsed_ms=agent_elapsed_ms,
+            queued_sentence_count=tts_sentence_idx,
+        )
         self.repo.finish_agent_request(
             match_id=payload["match_id"],
             task_id=task_id,
             status="completed",
             response_text=full_text,
-            latency_ms=max(0, int((time.perf_counter() - agent_started_time) * 1000)),
+            latency_ms=agent_elapsed_ms,
             completed_at=iso_now(),
         )
 
@@ -2174,6 +2298,21 @@ class MatchStore:
                 if not sentence or new_sent_chars <= tts_sent_chars:
                     break
                 tts_sent_chars = new_sent_chars
+                _chain_log(
+                    logging.INFO,
+                    "tts_sentence_queued",
+                    match_id=payload.get("match_id"),
+                    phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                    task_id=task_id,
+                    speech_id=speech_id,
+                    speaker_id=speaker_id,
+                    sentence_idx=tts_sentence_idx,
+                    mode="stable_final_tail",
+                    text_length=len(sentence),
+                    text=sentence,
+                    total_text_length=len(full_text),
+                    agent_elapsed_ms=agent_elapsed_ms,
+                )
                 tts_sentence_tasks.append(asyncio.create_task(synthesize_sentence(sentence, tts_sentence_idx)))
                 tts_sentence_idx += 1
                 async with self._lock:
@@ -2191,6 +2330,21 @@ class MatchStore:
                         )
                         self._persist_snapshot()
         if remaining_tail and tts_enabled and not stable_tts:
+            _chain_log(
+                logging.INFO,
+                "tts_sentence_queued",
+                match_id=payload.get("match_id"),
+                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=tts_sentence_idx,
+                mode="final_tail",
+                text_length=len(remaining_tail),
+                text=remaining_tail,
+                total_text_length=len(full_text),
+                agent_elapsed_ms=agent_elapsed_ms,
+            )
             tts_sentence_tasks.append(asyncio.create_task(synthesize_sentence(remaining_tail, tts_sentence_idx)))
             tts_sentence_idx += 1
             async with self._lock:
@@ -2214,9 +2368,37 @@ class MatchStore:
 
         if tts_sentence_tasks:
             raw = await asyncio.gather(*tts_sentence_tasks, return_exceptions=True)
+            for idx, result in enumerate(raw):
+                if isinstance(result, Exception):
+                    _chain_log(
+                        logging.ERROR,
+                        "tts_sentence_task_exception",
+                        match_id=payload.get("match_id"),
+                        phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                        task_id=task_id,
+                        speech_id=speech_id,
+                        speaker_id=speaker_id,
+                        sentence_idx=idx,
+                        error_type=type(result).__name__,
+                        error_message=str(result),
+                    )
             sentence_results = [bool(r) for r in raw if isinstance(r, bool)]
 
         all_tts_failed = bool(tts_enabled and expected_sentence_count > 0 and sentence_results and not any(sentence_results))
+        _chain_log(
+            logging.INFO,
+            "tts_all_sentences_finished",
+            match_id=payload.get("match_id"),
+            phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            expected_sentence_count=expected_sentence_count,
+            success_count=sum(1 for value in sentence_results if value),
+            failed_count=sum(1 for value in sentence_results if not value),
+            all_tts_failed=all_tts_failed,
+            elapsed_ms=_chain_elapsed_ms(agent_started_time),
+        )
 
         async with self._lock:
             speech = self.snapshot.get("current_speech")
@@ -2392,6 +2574,13 @@ class MatchStore:
         # tts_last_progress_at，只有长时间没有任何真实播放进度时才收尾。
         poll_seconds = 3
         grace_started_at = utc_now()
+        _chain_log(
+            logging.INFO,
+            "tts_playback_grace_started",
+            speech_id=speech_id,
+            task_id=task_id,
+            expected_sentence_count=expected_sentence_count,
+        )
         while True:
             async with self._lock:
                 speech = self.snapshot.get("current_speech")
@@ -2413,14 +2602,34 @@ class MatchStore:
                     else self._tts_playback_start_timeout_seconds()
                 )
             if playback_exhausted:
+                _chain_log(
+                    logging.INFO,
+                    "tts_playback_grace_complete_exhausted",
+                    speech_id=speech_id,
+                    task_id=task_id,
+                    expected_sentence_count=expected_sentence_count,
+                    idle_seconds=idle_seconds,
+                    idle_limit=idle_limit,
+                )
                 await self.complete_agent_playback(speech_id, task_id, reason="screen_playback_progress_exhausted")
                 return
             if idle_seconds >= idle_limit:
+                _chain_log(
+                    logging.WARNING,
+                    "tts_playback_grace_timeout",
+                    speech_id=speech_id,
+                    task_id=task_id,
+                    expected_sentence_count=expected_sentence_count,
+                    idle_seconds=idle_seconds,
+                    idle_limit=idle_limit,
+                    last_playback_status=last_playback_status,
+                )
                 await self.complete_agent_playback(speech_id, task_id, reason="screen_playback_timeout")
                 return
             await asyncio.sleep(poll_seconds)
 
     async def complete_agent_playback(self, speech_id: str, task_id: str, reason: str = "screen_playback_complete") -> Dict[str, Any]:
+        completed_started_time = time.perf_counter()
         ignored_payload: Optional[Dict[str, Any]] = None
         ended_payload: Optional[Dict[str, Any]] = None
         async with self._lock:
@@ -2473,12 +2682,27 @@ class MatchStore:
                     "speaker_id": speaker_id,
                     "side": speaker["side"],
                     "speech_id": speech_id,
+                    "task_id": task_id,
+                    "reason": reason,
+                    "phase_id": speech.get("phase_id"),
+                    "text_length": len(text),
+                    "expected_sentence_count": speech.get("tts_expected_sentences"),
+                    "played_sentences": speech.get("tts_played_sentences"),
+                    "played_sentence_indices": speech.get("tts_played_sentence_indices"),
+                    "skipped_sentences": speech.get("tts_skipped_sentences"),
                 }
                 self._persist_snapshot()
 
         if ignored_payload:
+            _chain_log(logging.WARNING, "tts_playback_complete_ignored", **ignored_payload)
             await self.emit("tts.playback_complete_ignored", ignored_payload, "screen")
             return await self.get_snapshot()
+        _chain_log(
+            logging.INFO,
+            "tts_playback_completed",
+            **(ended_payload or {"speech_id": speech_id, "task_id": task_id, "reason": reason}),
+            elapsed_ms=_chain_elapsed_ms(completed_started_time),
+        )
         await self.emit("speech.ended", ended_payload or {"speech_id": speech_id}, "agent", (ended_payload or {}).get("speaker_id"))
         if ended_payload and os.getenv("PHDEBATE_LIVEKIT_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
             self._voice_agent_closed_speeches.add(f"{ended_payload['match_id']}:{speech_id}")
@@ -3456,6 +3680,7 @@ class MatchStore:
             self._prefetch_inflight.discard(key)
 
     async def _run_prefetch(self, speaker: Dict[str, Any], mode: str, target_phase: Optional[Dict[str, Any]], key: str) -> None:
+        prefetch_started_time = time.perf_counter()
         is_self_intro = mode == "self_intro"
         speaker_id = speaker["id"]
         self._prefetch_counter += 1
@@ -3476,6 +3701,20 @@ class MatchStore:
                 tts_selection = self._select_tts_for_speech(task_id, speech_id, speaker)
             except SpeechProviderError:
                 tts_enabled = False
+        _chain_log(
+            logging.INFO,
+            "agent_prefetch_start",
+            match_id=payload.get("match_id"),
+            phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            mode=mode,
+            cache_key=key,
+            endpoint=endpoint or "embedded://mock",
+            tts_enabled=tts_enabled,
+            tts_provider=(tts_selection.provider if tts_selection else None),
+        )
         # 占位（pending），避免并发重复预取同一键。
         self._prepared_speeches[key] = {
             "speech_id": speech_id,
@@ -3512,6 +3751,20 @@ class MatchStore:
                         break
                     if not delta:
                         continue
+                    _chain_log(
+                        logging.INFO,
+                        "agent_prefetch_text_delta",
+                        match_id=payload.get("match_id"),
+                        phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                        task_id=task_id,
+                        speech_id=speech_id,
+                        speaker_id=speaker_id,
+                        delta_length=len(delta),
+                        total_length=len(full_text),
+                        delta=delta,
+                        content_preview=full_text[-160:],
+                        elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
+                    )
                     if tts_enabled:
                         while True:
                             sentence, new_chars = self._next_tts_sentence(
@@ -3520,14 +3773,55 @@ class MatchStore:
                             tts_sent_chars = new_chars
                             if not sentence:
                                 break
+                            _chain_log(
+                                logging.INFO,
+                                "tts_sentence_queued",
+                                match_id=payload.get("match_id"),
+                                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                                task_id=task_id,
+                                speech_id=speech_id,
+                                speaker_id=speaker_id,
+                                sentence_idx=tts_sentence_idx,
+                                mode="prefetch",
+                                text_length=len(sentence),
+                                text=sentence,
+                                total_text_length=len(full_text),
+                                agent_elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
+                            )
                             tts_sentence_tasks.append(asyncio.create_task(synth(sentence, tts_sentence_idx)))
                             tts_sentence_idx += 1
                     if clamped:
                         break
                 elif et == "final":
                     full_text, _ = self._clamp_agent_text_to_budget(event.get("content") or full_text, payload)
+                    _chain_log(
+                        logging.INFO,
+                        "agent_prefetch_text_final_event",
+                        match_id=payload.get("match_id"),
+                        phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                        task_id=task_id,
+                        speech_id=speech_id,
+                        speaker_id=speaker_id,
+                        text_length=len(full_text),
+                        text=full_text,
+                        elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
+                    )
                     break
-        except AgentGatewayError:
+        except AgentGatewayError as exc:
+            _chain_log(
+                logging.ERROR,
+                "agent_prefetch_failed",
+                match_id=payload.get("match_id"),
+                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                error_code=exc.code,
+                error_message=exc.message,
+                partial_text_length=len(full_text),
+                partial_text=full_text,
+                elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
+            )
             entry = self._prepared_speeches.get(key)
             if entry and entry.get("speech_id") == speech_id:
                 entry["status"] = "failed"
@@ -3535,6 +3829,21 @@ class MatchStore:
 
         remaining_tail = full_text[tts_sent_chars:].strip()
         if remaining_tail and tts_enabled:
+            _chain_log(
+                logging.INFO,
+                "tts_sentence_queued",
+                match_id=payload.get("match_id"),
+                phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=tts_sentence_idx,
+                mode="prefetch_tail",
+                text_length=len(remaining_tail),
+                text=remaining_tail,
+                total_text_length=len(full_text),
+                agent_elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
+            )
             tts_sentence_tasks.append(asyncio.create_task(synth(remaining_tail, tts_sentence_idx)))
             tts_sentence_idx += 1
         expected = tts_sentence_idx
@@ -3556,6 +3865,21 @@ class MatchStore:
                 "skipped_sentences": skipped,
                 "status": "ready",
             }
+        )
+        _chain_log(
+            logging.INFO,
+            "agent_prefetch_ready",
+            match_id=payload.get("match_id"),
+            phase_id=payload.get("phase_id") or payload.get("current_phase_id"),
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            cache_key=key,
+            text_length=len(full_text),
+            text=full_text,
+            expected_sentence_count=expected,
+            skipped_sentences=skipped,
+            elapsed_ms=_chain_elapsed_ms(prefetch_started_time),
         )
 
     def _take_prepared_speech(self, speaker_id: str, mode: str) -> Optional[Dict[str, Any]]:
@@ -6999,6 +7323,7 @@ class MatchStore:
         }
 
     async def start_agent_playback(self, speech_id: str, task_id: str, reason: str = "screen_playback_started") -> Dict[str, Any]:
+        playback_started_time = time.perf_counter()
         ignored_payload: Optional[Dict[str, Any]] = None
         started_payload: Optional[Dict[str, Any]] = None
         async with self._lock:
@@ -7034,12 +7359,29 @@ class MatchStore:
                     "speaker_id": speaker_id,
                     "detail": "TTS playing",
                 }
-                started_payload = started_payload or {"speech_id": speech_id, "task_id": task_id, "speaker_id": speaker_id, "reason": reason}
+                started_payload = started_payload or {
+                    "match_id": self.snapshot["match"]["id"],
+                    "phase_id": phase_id,
+                    "speech_id": speech_id,
+                    "task_id": task_id,
+                    "speaker_id": speaker_id,
+                    "reason": reason,
+                    "expected_sentence_count": speech.get("tts_expected_sentences"),
+                    "created_sentences": speech.get("tts_created_sentences"),
+                    "ready_sentences": speech.get("tts_ready_sentences"),
+                }
                 self._persist_snapshot()
                 awaitable_payload = started_payload
         if ignored_payload:
+            _chain_log(logging.WARNING, "tts_playback_start_ignored", **ignored_payload)
             await self.emit("tts.playback_start_ignored", ignored_payload, "screen")
             return await self.get_snapshot()
+        _chain_log(
+            logging.INFO,
+            "tts_playback_started",
+            **(started_payload or awaitable_payload),
+            elapsed_ms=_chain_elapsed_ms(playback_started_time),
+        )
         await self.emit("tts.started", started_payload or awaitable_payload, "system", (started_payload or {}).get("speaker_id"))
         await self.emit("speech.started", started_payload or awaitable_payload, "agent", (started_payload or {}).get("speaker_id"))
         return await self.get_snapshot()
@@ -7051,6 +7393,7 @@ class MatchStore:
         sentence_idx: int,
         status: str = "playing",
     ) -> Dict[str, Any]:
+        progress_started_time = time.perf_counter()
         payload: Dict[str, Any] = {
             "speech_id": speech_id,
             "task_id": task_id,
@@ -7126,9 +7469,13 @@ class MatchStore:
                 payload.update(
                     {
                         "speaker_id": speech.get("speaker_id"),
+                        "phase_id": speech.get("phase_id"),
                         "played_sentences": speech.get("tts_played_sentences"),
+                        "played_sentence_indices": speech.get("tts_played_sentence_indices"),
+                        "skipped_sentences": speech.get("tts_skipped_sentences"),
                         "expected_sentence_count": expected or None,
                         "last_progress_at": speech.get("tts_last_progress_at"),
+                        "queue_size": self.snapshot["speech_service"]["tts"].get("queue_size"),
                     }
                 )
                 if self._should_auto_complete_tts_playback(speech, status):
@@ -7139,6 +7486,12 @@ class MatchStore:
                         "reason": "screen_playback_progress_exhausted",
                     }
             self._persist_snapshot()
+        _chain_log(
+            logging.INFO if not payload.get("ignored") and status in {"playing", "played"} else logging.WARNING,
+            "tts_playback_progress",
+            **payload,
+            elapsed_ms=_chain_elapsed_ms(progress_started_time),
+        )
         await self.emit("tts.playback_progress", payload, "screen", payload.get("speaker_id"))
         if auto_complete_payload:
             return await self.complete_agent_playback(
@@ -7788,6 +8141,17 @@ class MatchStore:
         request_id = f"tts_{task_id}_s{sentence_idx}"
 
         async def _emit_skip(reason: str) -> None:
+            _chain_log(
+                logging.WARNING,
+                "tts_sentence_skipped",
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=sentence_idx,
+                reason=reason,
+                text=text,
+                normalized_text=normalize_tts_text(text),
+            )
             await self._emit_tts_sentence_skip(task_id, speech_id, speaker_id, sentence_idx, reason)
 
         normalized_text = normalize_tts_text(text)
@@ -7829,6 +8193,25 @@ class MatchStore:
             )
 
         request_started_time = time.perf_counter()
+        _chain_log(
+            logging.INFO,
+            "tts_sentence_synthesis_start",
+            match_id=match_id,
+            phase_id=phase_id,
+            phase_key=phase_key,
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            sentence_idx=sentence_idx,
+            request_id=request_id,
+            provider=selection.provider,
+            voice_preset_id=(selection.preset or {}).get("id"),
+            voice=(selection.preset or {}).get("voice") or speaker.get("tts_voice_preset_id") or "",
+            text_length=len(text),
+            normalized_text_length=len(normalized_text),
+            text=text,
+            normalized_text=normalized_text,
+        )
         asyncio.create_task(
             publish_tts_sentence(
                 {
@@ -7880,6 +8263,23 @@ class MatchStore:
                 await tts_live_manager.finish(live_key, {"mime_type": result.mime_type, "latency_ms": result.latency_ms, "chunk_count": result.chunk_count})
             else:
                 result = await self._synthesize_tts_with_retry(selection, normalized_text)
+            _chain_log(
+                logging.INFO,
+                "tts_sentence_synthesis_completed",
+                match_id=match_id,
+                phase_id=phase_id,
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=sentence_idx,
+                request_id=request_id,
+                provider=selection.provider,
+                mime_type=result.mime_type,
+                audio_bytes=len(result.audio),
+                chunk_count=result.chunk_count,
+                provider_latency_ms=result.latency_ms,
+                elapsed_ms=_chain_elapsed_ms(request_started_time),
+            )
         except SpeechProviderError as exc:
             try:
                 await tts_live_manager.fail((match_id, speech_id, task_id, sentence_idx), _speech_error_message(exc))
@@ -7887,6 +8287,22 @@ class MatchStore:
                 pass
             message = _speech_error_message(exc)
             code = _speech_error_code(exc, "tts_error")
+            _chain_log(
+                logging.ERROR,
+                "tts_sentence_synthesis_failed",
+                match_id=match_id,
+                phase_id=phase_id,
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=sentence_idx,
+                request_id=request_id,
+                provider=selection.provider,
+                error_code=code,
+                error_message=message,
+                text=normalized_text,
+                elapsed_ms=_chain_elapsed_ms(request_started_time),
+            )
             async with self._lock:
                 self.repo.finish_speech_service_request(
                     match_id=match_id,
@@ -7901,6 +8317,29 @@ class MatchStore:
             await _emit_skip("tts_synthesize_failed")
             return False
         except Exception as exc:  # noqa: BLE001 — 任何意外错误都必须降级为跳句，绝不让某句静默死亡卡住大屏 12s
+            logger.exception(
+                "agent_tts_chain unexpected TTS sentence error task_id=%s speech_id=%s speaker_id=%s sentence_idx=%s",
+                task_id,
+                speech_id,
+                speaker_id,
+                sentence_idx,
+            )
+            _chain_log(
+                logging.ERROR,
+                "tts_sentence_internal_error",
+                match_id=match_id,
+                phase_id=phase_id,
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=sentence_idx,
+                request_id=request_id,
+                provider=selection.provider,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                text=normalized_text,
+                elapsed_ms=_chain_elapsed_ms(request_started_time),
+            )
             try:
                 await tts_live_manager.fail((match_id, speech_id, task_id, sentence_idx), "TTS 合成内部错误")
             except Exception:
@@ -7965,7 +8404,21 @@ class MatchStore:
             audio_root = self.audio_root_path()
             rel = file_path.relative_to(audio_root)
             audio_url = "/api/audio/" + "/".join(rel.parts)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            _chain_log(
+                logging.ERROR,
+                "tts_sentence_archive_failed",
+                match_id=match_id,
+                phase_id=phase_id,
+                task_id=task_id,
+                speech_id=speech_id,
+                speaker_id=speaker_id,
+                sentence_idx=sentence_idx,
+                request_id=request_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                elapsed_ms=_chain_elapsed_ms(request_started_time),
+            )
             async with self._lock:
                 self.repo.finish_speech_service_request(
                     match_id=match_id,
@@ -7981,6 +8434,7 @@ class MatchStore:
             return False
 
         latency_ms = result.latency_ms
+        archive_elapsed_ms = _chain_elapsed_ms(request_started_time)
         async with self._lock:
             asset = self._upsert_audio_asset(
                 speech_id=speech_id,
@@ -8060,6 +8514,28 @@ class MatchStore:
             "screen",
             speaker_id,
             sync_structured=False,
+        )
+        _chain_log(
+            logging.INFO,
+            "tts_sentence_ready",
+            match_id=match_id,
+            phase_id=phase_id,
+            task_id=task_id,
+            speech_id=speech_id,
+            speaker_id=speaker_id,
+            sentence_idx=sentence_idx,
+            request_id=request_id,
+            provider=selection.provider,
+            audio_url=audio_url,
+            file_path=str(file_path),
+            mime_type=archive_mime_type,
+            source_audio_bytes=len(result.audio),
+            archived_audio_bytes=len(archived_audio),
+            chunk_count=result.chunk_count,
+            provider_latency_ms=latency_ms,
+            elapsed_ms=archive_elapsed_ms,
+            normalization=normalize_meta,
+            text=normalized_text,
         )
         return True
 

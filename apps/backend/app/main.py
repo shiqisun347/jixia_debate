@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -57,6 +59,7 @@ from app.services.ruleset_store import ruleset_store, generate_flow, FLOW_TEMPLA
 from app.services.xiaoqi_store import xiaoqi_store, COMMANDS as XIAOQI_COMMANDS
 
 
+logger = logging.getLogger("phdebate.agent_tts_chain")
 _timer_task: Optional[asyncio.Task] = None
 
 
@@ -556,16 +559,42 @@ async def serve_match_image(filename: str) -> FileResponse:
 @app.get("/api/audio/{match_id}/{path:path}")
 async def serve_tts_audio(match_id: str, path: str) -> FileResponse:
     """Serve archived TTS audio files for browser playback on the screen."""
+    started_time = time.perf_counter()
     audio_root = store.audio_root_path().resolve()
     target = (audio_root / match_id / path).resolve()
     try:
         target.relative_to(audio_root)
     except ValueError:
+        logger.warning(
+            "agent_tts_chain audio_serve_rejected match_id=%s path=%s target=%s audio_root=%s elapsed_ms=%s",
+            match_id,
+            path,
+            target,
+            audio_root,
+            max(0, int((time.perf_counter() - started_time) * 1000)),
+        )
         raise HTTPException(status_code=404, detail="not found")
     if not target.is_file():
+        logger.warning(
+            "agent_tts_chain audio_serve_missing match_id=%s path=%s target=%s audio_root=%s elapsed_ms=%s",
+            match_id,
+            path,
+            target,
+            audio_root,
+            max(0, int((time.perf_counter() - started_time) * 1000)),
+        )
         raise HTTPException(status_code=404, detail="audio file not found")
     suffix = target.suffix.lower()
     media_type = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg", "pcm": "audio/pcm"}.get(suffix.lstrip("."), "audio/mpeg")
+    logger.info(
+        "agent_tts_chain audio_serve_ok match_id=%s path=%s target=%s media_type=%s size_bytes=%s elapsed_ms=%s",
+        match_id,
+        path,
+        target,
+        media_type,
+        target.stat().st_size,
+        max(0, int((time.perf_counter() - started_time) * 1000)),
+    )
     # 归档音频是内容寻址、写一次（文件名含 task_id + 句序号，重合成会换新 task_id→新 URL），可安全缓存。
     # 设为可缓存后，大屏「播当前句时预取下一句」能命中缓存→切换秒开，消除句间停顿。
     return FileResponse(target, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})

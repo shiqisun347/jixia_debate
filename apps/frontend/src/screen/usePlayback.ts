@@ -30,6 +30,28 @@ const PLAYBACK_HEARTBEAT_MS = 5000;
 const SCREEN_TTS_VOLUME = 0.86;
 export const SCREEN_TTS_PLAYBACK_RATE = 1.0;
 
+function logPlayback(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
+  const payload = { event, at: new Date().toISOString(), ...fields };
+  if (level === "error") {
+    console.error("[agent-tts-playback]", payload);
+  } else if (level === "warn") {
+    console.warn("[agent-tts-playback]", payload);
+  } else {
+    console.info("[agent-tts-playback]", payload);
+  }
+}
+
+function mediaErrorDetails(el: HTMLAudioElement): Record<string, unknown> {
+  const err = el.error;
+  return {
+    error_code: err?.code ?? null,
+    error_message: err?.message ?? "",
+    network_state: el.networkState,
+    ready_state: el.readyState,
+    current_src: el.currentSrc || el.src,
+  };
+}
+
 export function usePlayback(
   matchId: string,
   snapshot: MatchSnapshot | null,
@@ -91,6 +113,18 @@ export function usePlayback(
       const cur = currentPlayRef.current;
       if (!cur) return;
       mediaRef.current = "playing";
+      logPlayback("info", "audio_onplaying", {
+        match_id: matchId,
+        speech_id: cur.speechId,
+        task_id: cur.taskId,
+        speaker_id: cur.speakerId,
+        sentence_idx: cur.idx,
+        url: urlRef.current,
+        duration: Number.isFinite(el.duration) ? el.duration : null,
+        current_time: el.currentTime,
+        ready_state: el.readyState,
+        network_state: el.networkState,
+      });
       const startKey = `${cur.speechId}:${cur.taskId}`;
       if (startReportedRef.current !== startKey) {
         startReportedRef.current = startKey;
@@ -112,6 +146,16 @@ export function usePlayback(
       const cur = currentPlayRef.current;
       mediaRef.current = "ended";
       if (cur) {
+        logPlayback("info", "audio_onended", {
+          match_id: matchId,
+          speech_id: cur.speechId,
+          task_id: cur.taskId,
+          speaker_id: cur.speakerId,
+          sentence_idx: cur.idx,
+          url: urlRef.current,
+          duration: Number.isFinite(el.duration) ? el.duration : null,
+          current_time: el.currentTime,
+        });
         void postWithRetry(`/api/matches/${matchId}/speeches/${cur.speechId}/tts/playback-progress`, {
           task_id: cur.taskId,
           sentence_idx: cur.idx,
@@ -123,11 +167,35 @@ export function usePlayback(
     };
     el.onwaiting = () => {
       if (activeElRef.current !== el) return;
+      const cur = currentPlayRef.current;
+      logPlayback("warn", "audio_onwaiting", {
+        match_id: matchId,
+        speech_id: cur?.speechId,
+        task_id: cur?.taskId,
+        speaker_id: cur?.speakerId,
+        sentence_idx: cur?.idx,
+        url: urlRef.current,
+        current_time: el.currentTime,
+        ready_state: el.readyState,
+        network_state: el.networkState,
+      });
       mediaRef.current = "stalled";
       runnerRef.current(nowEpoch());
     };
     el.onstalled = () => {
       if (activeElRef.current !== el) return;
+      const cur = currentPlayRef.current;
+      logPlayback("warn", "audio_onstalled", {
+        match_id: matchId,
+        speech_id: cur?.speechId,
+        task_id: cur?.taskId,
+        speaker_id: cur?.speakerId,
+        sentence_idx: cur?.idx,
+        url: urlRef.current,
+        current_time: el.currentTime,
+        ready_state: el.readyState,
+        network_state: el.networkState,
+      });
       mediaRef.current = "stalled";
       runnerRef.current(nowEpoch());
     };
@@ -140,12 +208,30 @@ export function usePlayback(
       const cur = currentPlayRef.current;
       const rk = cur ? `${cur.taskId}:${cur.idx}` : "";
       const tries = (rk && retryRef.current.get(rk)) || 0;
+      logPlayback("error", "audio_onerror", {
+        match_id: matchId,
+        speech_id: cur?.speechId,
+        task_id: cur?.taskId,
+        speaker_id: cur?.speakerId,
+        sentence_idx: cur?.idx,
+        url: urlRef.current,
+        retry_count: tries,
+        ...mediaErrorDetails(el),
+      });
       if (rk && tries < 1 && urlRef.current) {
         retryRef.current.set(rk, tries + 1);
         try {
           el.src = urlRef.current;
           el.load();
           void el.play().catch(() => {
+            logPlayback("error", "audio_retry_play_rejected", {
+              match_id: matchId,
+              speech_id: cur?.speechId,
+              task_id: cur?.taskId,
+              speaker_id: cur?.speakerId,
+              sentence_idx: cur?.idx,
+              url: urlRef.current,
+            });
             mediaRef.current = "errored";
             runnerRef.current(nowEpoch());
           });
@@ -186,7 +272,9 @@ export function usePlayback(
       preloadedUrlRef.current = url;
       p.src = url;
       p.load();
+      logPlayback("info", "audio_preload_next", { match_id: matchId, url });
     } catch {
+      logPlayback("warn", "audio_preload_failed", { match_id: matchId, url });
       /* 预加载失败无所谓：主播放仍会自行取流，只是少了这点提速 */
     }
   }
@@ -238,11 +326,25 @@ export function usePlayback(
         positionRef.current = decision.position;
 
         if (decision.kind === "PLAY") {
+          logPlayback("info", "reconcile_play_decision", {
+            match_id: matchId,
+            speech_id: speech?.speechId,
+            task_id: speech?.taskId,
+            speaker_id: speech?.speakerId,
+            sentence_idx: decision.sentenceIdx,
+            audio_url: decision.audioUrl,
+          });
           if (speech) playSegment(speech, decision.sentenceIdx, decision.audioUrl);
           return;
         }
 
         if (decision.kind === "STOP") {
+          logPlayback("info", "reconcile_stop_decision", {
+            match_id: matchId,
+            speech_id: speech?.speechId,
+            task_id: speech?.taskId,
+            reason: decision.reason,
+          });
           if (decision.reason === "suppressed" || decision.reason === "audio_disabled") {
             const el = activeElRef.current;
             if (el) {
@@ -261,6 +363,12 @@ export function usePlayback(
 
         if (decision.kind === "DONE") {
           clearActiveAudio(activeElRef, activeSegmentRef, playbackProgressRef);
+          logPlayback("info", "reconcile_done_decision", {
+            match_id: matchId,
+            speech_id: decision.speechId,
+            task_id: decision.taskId,
+            speaker_id: speech?.speakerId,
+          });
           void postWithRetry(`/api/matches/${matchId}/speeches/${decision.speechId}/tts/playback-complete`, {
             task_id: decision.taskId,
             speaker_id: speech?.speakerId,
@@ -274,6 +382,14 @@ export function usePlayback(
         }
 
         if (decision.kind === "SKIP") {
+          logPlayback("warn", "reconcile_skip_decision", {
+            match_id: matchId,
+            speech_id: speech?.speechId,
+            task_id: speech?.taskId,
+            speaker_id: speech?.speakerId,
+            sentence_idx: decision.sentenceIdx,
+            reason: decision.reason,
+          });
           if (speech) {
             const segment = `${speech.speechId}:${speech.taskId}:${decision.sentenceIdx}`;
             if (activeSegmentRef.current === segment) {
@@ -304,7 +420,25 @@ export function usePlayback(
           const el = currentEl;
           mediaRef.current = el.paused ? "idle" : "playing";
           if (el.paused) {
+            logPlayback("info", "audio_play_resume_attempt", {
+              match_id: matchId,
+              speech_id: sp.speechId,
+              task_id: sp.taskId,
+              speaker_id: sp.speakerId,
+              sentence_idx: idx,
+              url,
+            });
             void el.play().catch((err: unknown) => {
+              logPlayback("error", "audio_play_resume_rejected", {
+                match_id: matchId,
+                speech_id: sp.speechId,
+                task_id: sp.taskId,
+                speaker_id: sp.speakerId,
+                sentence_idx: idx,
+                url,
+                error_name: (err as { name?: string })?.name,
+                error_message: err instanceof Error ? err.message : String(err),
+              });
               if (err && (err as { name?: string }).name === "NotAllowedError") {
                 markPlaybackBlocked();
                 return;
@@ -344,7 +478,28 @@ export function usePlayback(
         } catch {
           /* ignore */
         }
+        logPlayback("info", "audio_play_attempt", {
+          match_id: matchId,
+          speech_id: sp.speechId,
+          task_id: sp.taskId,
+          speaker_id: sp.speakerId,
+          sentence_idx: idx,
+          url,
+          reused_preload: Boolean(standby),
+          ready_state: el.readyState,
+          network_state: el.networkState,
+        });
         void el.play().catch((err: unknown) => {
+          logPlayback("error", "audio_play_rejected", {
+            match_id: matchId,
+            speech_id: sp.speechId,
+            task_id: sp.taskId,
+            speaker_id: sp.speakerId,
+            sentence_idx: idx,
+            url,
+            error_name: (err as { name?: string })?.name,
+            error_message: err instanceof Error ? err.message : String(err),
+          });
           if (err && (err as { name?: string }).name === "NotAllowedError") {
             markPlaybackBlocked();
             return;
@@ -416,6 +571,11 @@ export function usePlayback(
     if (!lastEvent) {
       return;
     }
+    logPlayback("info", "realtime_event_received", {
+      match_id: matchId,
+      type: lastEvent.type,
+      payload: lastEvent.payload,
+    });
     const p = (lastEvent.payload ?? {}) as Record<string, unknown>;
     const speechId = String(p.speech_id ?? "");
     const taskId = String(p.task_id ?? "");
@@ -436,6 +596,15 @@ export function usePlayback(
         if (url) {
           if (eventChunksRef.current.key !== key) eventChunksRef.current = { key, map: new Map() };
           eventChunksRef.current.map.set(idx, url);
+          logPlayback("info", "sentence_ready_received", {
+            match_id: matchId,
+            speech_id: speechId,
+            task_id: taskId,
+            sentence_idx: idx,
+            audio_url: url,
+            mime_type: p.mime_type,
+            size_bytes: p.size_bytes,
+          });
           const active = currentPlayRef.current;
           if (active && active.speechId === speechId && active.taskId === taskId && idx === active.idx + 1) {
             preloadNext(url);
@@ -443,6 +612,13 @@ export function usePlayback(
         } else if (p.skipped) {
           if (eventSkipsRef.current.key !== key) eventSkipsRef.current = { key, set: new Set() };
           eventSkipsRef.current.set.add(idx);
+          logPlayback("warn", "sentence_skip_received", {
+            match_id: matchId,
+            speech_id: speechId,
+            task_id: taskId,
+            sentence_idx: idx,
+            reason: p.reason,
+          });
         }
       }
     }
@@ -606,9 +782,19 @@ export async function postWithRetry(
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
+      logPlayback("info", "playback_callback_post_attempt", { path, body, attempt: attempt + 1, attempts });
       await sender(path, body);
+      logPlayback("info", "playback_callback_post_ok", { path, body, attempt: attempt + 1 });
       return true;
-    } catch {
+    } catch (err) {
+      logPlayback(attempt >= attempts - 1 ? "error" : "warn", "playback_callback_post_failed", {
+        path,
+        body,
+        attempt: attempt + 1,
+        attempts,
+        error_name: (err as { name?: string })?.name,
+        error_message: err instanceof Error ? err.message : String(err),
+      });
       if (attempt >= attempts - 1) return false;
       await sleep(delayMs * Math.max(1, attempt + 1));
     }
