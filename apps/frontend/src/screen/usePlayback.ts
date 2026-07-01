@@ -436,7 +436,7 @@ export function usePlayback(
       : false;
     tickPlaybackMetrics(metrics, bucketForPlaybackState(speech, positionRef.current, mediaRef.current, audioEnabledRef.current, suppressed), now);
     metrics.flushed = true;
-    console.info("[agent-tts-playback-metrics]", buildPlaybackMetricsSummary(metrics, reason, now));
+    console.log("[agent-tts-playback-metrics]", buildPlaybackMetricsSummary(metrics, reason, now));
   }, []);
 
   const markPlaybackBlocked = useCallback(() => {
@@ -1091,6 +1091,10 @@ export function usePlayback(
       // 「继续播放」也重新打开音频开关：若此前因自动播放被拦而被置 false，这里恢复。
       audioEnabledRef.current = true;
       setAudioEnabled(true);
+    } else if (lastEvent.type === "tts.finished") {
+      flushMetrics("tts_finished_event");
+    } else if (lastEvent.type === "speech.ended") {
+      flushMetrics("speech_ended_event");
     } else if (lastEvent.type === "tts.sentence_ready") {
       const url = String(p.audio_url ?? "");
       const idx = Number(p.sentence_idx ?? NaN);
@@ -1142,7 +1146,7 @@ export function usePlayback(
       }
     }
     runnerRef.current(nowEpoch());
-  }, [lastEvent, setAudioEnabled]);
+  }, [flushMetrics, lastEvent, setAudioEnabled]);
 
   // 触发器 3：1 秒看门狗——即便所有媒体事件都不触发，也能按时间强制推进，永不永久卡死。
   useEffect(() => {
